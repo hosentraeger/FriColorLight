@@ -96,3 +96,8 @@ void pwm_driver_apply ( )
     ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_2, blue);
     ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_2);
 }
+
+uint8_t pwm_rgb_driver_get_level()
+{
+    return s_level;
+}

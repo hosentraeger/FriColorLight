@@ -74,6 +74,8 @@ void pwm_rgb_driver_set_color_hue_sat(uint8_t hue, uint8_t sat);
 */
 void pwm_driver_apply ( );
 
+uint8_t pwm_rgb_driver_get_level(void);
+
 #ifdef __cplusplus
 } // extern "C"
 #endif
