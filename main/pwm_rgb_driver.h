@@ -15,7 +15,9 @@
 
 #pragma once
 
-#include "light_driver.h"
+#include <stdint.h>
+#include <stdbool.h>
+#include "driver/gpio.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -33,7 +35,7 @@ void pwm_rgb_driver_set_power(bool power);
 *
 * @param power power on/off
 */
-void pwm_rgb_driver_init(uint8_t pwm_red_pin, uint8_t pwm_green_pin, uint8_t pwm_blue_pin );
+void pwm_rgb_driver_init(uint8_t pwm_red_pin, uint8_t pwm_green_pin, uint8_t pwm_blue_pin);
 
 /**
 * @brief Set light level
@@ -66,6 +68,11 @@ void pwm_rgb_driver_set_color_xy(uint16_t color_current_x, uint16_t color_curren
 * @param  sat  The sat to be set
 */
 void pwm_rgb_driver_set_color_hue_sat(uint8_t hue, uint8_t sat);
+
+/**
+* @brief Apply the current light settings
+*/
+void pwm_driver_apply ( );
 
 #ifdef __cplusplus
 } // extern "C"

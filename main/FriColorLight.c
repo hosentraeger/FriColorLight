@@ -20,6 +20,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "ha/esp_zigbee_ha_standard.h"
+#include "zcl_utility.h"
 
 #if !defined CONFIG_ZB_ZCZR
 #error Define ZB_ZCZR in idf.py menuconfig to compile light (Router) source code.
@@ -29,12 +30,94 @@ static uint8_t model_id[] = { 16, 'r','g','b','w','w','-','c','o','l','o','r','l
 static uint8_t vendor[]   = { 14, 'r','e','d','f','i','v','e','d','e','s','i','g','n','s' };
 
 static const char *TAG = "ESP_ZB_COLOR_DIMM_LIGHT";
+
+
+// Claude -->
+#include "zboss_api.h"  // für zb_zcl_parsed_hdr_t und ZB_BUF_GET_PARAM
+
+static bool zb_raw_command_handler(uint8_t bufid)
+{
+    zb_zcl_parsed_hdr_t *cmd_info = ZB_BUF_GET_PARAM(bufid, zb_zcl_parsed_hdr_t);
+    
+    ESP_LOGI(TAG, "RAW CMD: cluster=0x%04x, cmd=0x%02x, ep=%d",
+             cmd_info->cluster_id,
+             cmd_info->cmd_id,
+             cmd_info->addr_data.common_data.dst_endpoint);
+
+    // Nur unseren Endpoint behandeln
+    if (cmd_info->addr_data.common_data.dst_endpoint != HA_COLOR_DIMMABLE_LIGHT_ENDPOINT) {
+        return false; // nicht behandelt → Stack verarbeitet weiter
+    }
+
+    if (cmd_info->cluster_id == ESP_ZB_ZCL_CLUSTER_ID_ON_OFF) {
+        switch (cmd_info->cmd_id) {
+            case 0x00: // Off
+                esp_zb_zcl_set_attribute_val(
+                    HA_COLOR_DIMMABLE_LIGHT_ENDPOINT,
+                    ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
+                    ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                    ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID,
+                    &(bool){false}, false);
+                pwm_rgb_driver_set_power(false);
+                return true;
+
+            case 0x01: // On
+                esp_zb_zcl_set_attribute_val(
+                    HA_COLOR_DIMMABLE_LIGHT_ENDPOINT,
+                    ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
+                    ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                    ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID,
+                    &(bool){true}, false);
+                pwm_rgb_driver_set_power(true);
+                return true;
+            case 0x02: // Toggle
+                ESP_LOGI(TAG, "RAW: Toggle");
+                // aktuellen Zustand aus Attribut lesen
+                bool *cur = (bool *)esp_zb_zcl_get_attribute(
+                    HA_COLOR_DIMMABLE_LIGHT_ENDPOINT,
+                    ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
+                    ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                    ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID)->data_p;
+                bool new_state = !(*cur);
+                esp_zb_zcl_set_attribute_val(
+                    HA_COLOR_DIMMABLE_LIGHT_ENDPOINT,
+                    ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
+                    ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                    ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID,
+                    &new_state, false);
+                pwm_rgb_driver_set_power(new_state);
+                return true;
+        }
+    }
+
+    if (cmd_info->cluster_id == ESP_ZB_ZCL_CLUSTER_ID_LEVEL_CONTROL) {
+        // Payload nach dem Header auslesen
+        uint8_t *payload = (uint8_t *)zb_buf_begin(bufid);
+        switch (cmd_info->cmd_id) {
+            case 0x00: // Move to Level
+            case 0x04: // Move to Level (with On/Off)
+                if (payload) {
+                    uint8_t level = payload[0];
+                    ESP_LOGI(TAG, "RAW: Level=%d", level);
+                    pwm_rgb_driver_set_level(level);
+                    if (cmd_info->cmd_id == 0x04) {
+                        pwm_rgb_driver_set_power(level > 0);
+                    }
+                }
+                return true;
+        }
+    }
+
+    return false; // alle anderen Commands normal verarbeiten lassen
+}
+// <-- Claude
+
 /********************* Define functions **************************/
 static esp_err_t deferred_driver_init(void)
 {
     static bool is_inited = false;
     if (!is_inited) {
-        pwm_rgb_driver_init(PWM_RED_PIN, PWM_GREEN_PIN, PWM_BLUE_PIN, PWM_WHITE_PIN );
+        pwm_rgb_driver_init(PWM_RED_PIN, PWM_GREEN_PIN, PWM_BLUE_PIN );
         is_inited = true;
     }
     return is_inited ? ESP_OK : ESP_FAIL;
@@ -95,6 +178,7 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
             }
         }
         break;
+    case ESP_ZB_BDB_SIGNAL_FINDING_AND_BINDING_TARGET_FINISHED:
     default:
         ESP_LOGI(TAG, "ZDO signal: %s (0x%x), status: %s", esp_zb_zdo_signal_to_string(sig_type), sig_type, esp_err_to_name(err_status));
         break;
@@ -166,6 +250,51 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
     case ESP_ZB_CORE_SET_ATTR_VALUE_CB_ID:
         ret = zb_attribute_handler((esp_zb_zcl_set_attr_value_message_t *)message);
         break;
+
+    case ESP_ZB_CORE_CMD_CUSTOM_CLUSTER_REQ_CB_ID: {
+        esp_zb_zcl_custom_cluster_command_message_t *cmd = 
+            (esp_zb_zcl_custom_cluster_command_message_t *)message;
+
+        if (cmd->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_ON_OFF) {
+            switch (cmd->info.command.id) {
+                case ESP_ZB_ZCL_CMD_ON_OFF_OFF_ID:   // 0x00
+                    ESP_LOGI(TAG, "Command: Off");
+                    pwm_rgb_driver_set_power(false);
+                    break;
+                case ESP_ZB_ZCL_CMD_ON_OFF_ON_ID:    // 0x01
+                    ESP_LOGI(TAG, "Command: On");
+                    pwm_rgb_driver_set_power(true);
+                    break;
+                case ESP_ZB_ZCL_CMD_ON_OFF_TOGGLE_ID: // 0x02
+                    ESP_LOGI(TAG, "Command: Toggle");
+                    // Toggle-Zustand aus dem Attribut lesen
+                    bool current = *(bool *)esp_zb_zcl_get_attribute(
+                        cmd->info.dst_endpoint,
+                        ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
+                        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                        ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID)->data_p;
+                    pwm_rgb_driver_set_power(!current);
+                    break;
+            }
+        } else if (cmd->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_LEVEL_CONTROL) {
+            switch (cmd->info.command.id) {
+                case ESP_ZB_ZCL_CMD_LEVEL_CONTROL_MOVE_TO_LEVEL_WITH_ON_OFF: // 0x04
+                case ESP_ZB_ZCL_CMD_LEVEL_CONTROL_MOVE_TO_LEVEL: {           // 0x00
+                    uint8_t level = ((uint8_t *)cmd->data.value)[0];
+                    ESP_LOGI(TAG, "MoveToLevel: %d", level);
+                    pwm_rgb_driver_set_level(level);
+                    // Bei 0x04: auch Power-State setzen
+                    if (cmd->info.command.id == 
+                        ESP_ZB_ZCL_CMD_LEVEL_CONTROL_MOVE_TO_LEVEL_WITH_ON_OFF) {
+                        pwm_rgb_driver_set_power(level > 0);
+                    }
+                    break;
+                }
+            }
+        }
+        break;
+    }
+
     default:
         ESP_LOGW(TAG, "Receive Zigbee action(0x%x) callback", callback_id);
         break;
@@ -190,6 +319,12 @@ static void esp_zb_task(void *pvParameters)
     esp_zb_device_register(esp_zb_color_dimmable_light_ep);
     esp_zb_core_action_handler_register(zb_action_handler);
     esp_zb_set_primary_network_channel_set(ESP_ZB_PRIMARY_CHANNEL_MASK);
+    
+    // Claude -->
+    esp_zb_core_action_handler_register(zb_action_handler);
+    esp_zb_raw_command_handler_register(zb_raw_command_handler); // NEU
+    esp_zb_set_primary_network_channel_set(ESP_ZB_PRIMARY_CHANNEL_MASK);
+    // <-- Claude
     ESP_ERROR_CHECK(esp_zb_start(false));
     esp_zb_stack_main_loop();
 }

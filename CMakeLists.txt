@@ -1,5 +1,10 @@
-# The following lines of boilerplate have to be in your project's CMakeLists
-# in this exact order for cmake to work correctly
 cmake_minimum_required(VERSION 3.16)
+
+# SDK-Pfade setzen (optional, falls nicht global definiert)
+# set(EXTRA_COMPONENT_DIRS "C:/Users/fsieb/esp/esp-zigbee-sdk/components")
+
+# Das ESP-IDF Framework einbinden
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
-project(color_light_bulb)
+
+# Den Projektnamen definieren (ERST HIER!)
+project(FriColorLight)

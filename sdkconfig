@@ -2058,12 +2058,6 @@ CONFIG_WIFI_PROV_STA_ALL_CHANNEL_SCAN=y
 # end of Wi-Fi Provisioning Manager
 
 #
-# ESP Zigbee DevKit LED Configuration
-#
-CONFIG_GPIO_LED_ON_DEVKIT=8
-# end of ESP Zigbee DevKit LED Configuration
-
-#
 # Zigbee
 #
 CONFIG_ZB_ENABLED=y

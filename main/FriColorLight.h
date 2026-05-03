@@ -13,16 +13,15 @@
  */
 
 #include "esp_zigbee_core.h"
-#include "light_driver.h"
-#include "zcl_utility.h"
 
 /* Hardware*/
 
 #define PWM_RED_PIN 20
 #define PWM_GREEN_PIN 21 
 #define PWM_BLUE_PIN 23
-#define PWM_COLDWHITE_PIN 9
+#define PWM_COLDWHITE_PIN 19
 #define PWM_WARMWHITE_PIN 22
+#define NEOPIXEL_PIN 1
 
 /* Zigbee configuration */
 #define MAX_CHILDREN                      10                                    /* the max amount of connected devices */
@@ -31,8 +30,8 @@
 #define ESP_ZB_PRIMARY_CHANNEL_MASK       ESP_ZB_TRANSCEIVER_ALL_CHANNELS_MASK  /* Zigbee primary channel mask use in the example */
 
 /* Basic manufacturer information */
-#define ESP_MANUFACTURER_NAME "\x09""ESPRESSIF"      /* Customized manufacturer name */
-#define ESP_MODEL_IDENTIFIER "\x07"CONFIG_IDF_TARGET /* Customized model identifier */
+//#define ESP_MANUFACTURER_NAME "\x09""ESPRESSIF"      /* Customized manufacturer name */
+//#define ESP_MODEL_IDENTIFIER "\x07"CONFIG_IDF_TARGET /* Customized model identifier */
 
 #define ESP_ZB_ZR_CONFIG()                                                              \
     {                                                                                   \
