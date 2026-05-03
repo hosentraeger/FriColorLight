@@ -34,15 +34,63 @@ static const char *TAG = "ESP_ZB_COLOR_DIMM_LIGHT";
 
 // Claude -->
 #include "zboss_api.h"  // für zb_zcl_parsed_hdr_t und ZB_BUF_GET_PARAM
+typedef enum {
+    LIGHT_PARAM_NONE = 0,
+    LIGHT_PARAM_LEVEL,
+    LIGHT_PARAM_COLORTEMP,
+    LIGHT_PARAM_HUE,
+} light_param_t;
+
+typedef struct {
+    light_param_t param;
+    int8_t direction;   // +1 = up, -1 = down, 0 = stop
+    uint8_t rate;       // Units pro Sekunde laut ZCL
+    uint8_t start_level; // für Move to Level: Start-Level, sonst 0
+} light_move_cmd_t;
+
+static QueueHandle_t s_move_queue;
+
+static void light_move_task(void *pvParameters)
+{
+    light_move_cmd_t cmd = {0};
+    uint8_t s_level = 0;
+
+    while (true) {
+        // Neues Command ohne Blockieren prüfen
+        xQueueReceive(s_move_queue, &cmd, 0);
+
+        if (cmd.direction != 0 && cmd.param == LIGHT_PARAM_LEVEL) {
+            int16_t step = (cmd.rate * 20) / 1000; // bei 20ms Tick
+            if (step < 1) step = 1;
+            int16_t new_level = s_level + cmd.direction * step;
+            if (new_level >= 255) { new_level = 255; cmd.direction = 0; }
+            if (new_level <= 0)   { new_level = 0;   cmd.direction = 0; }
+            s_level = (uint8_t)new_level;
+            pwm_rgb_driver_set_level(s_level);
+            ESP_LOGI(TAG, "Moving level: %d", s_level);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+}
 
 static bool zb_raw_command_handler(uint8_t bufid)
 {
     zb_zcl_parsed_hdr_t *cmd_info = ZB_BUF_GET_PARAM(bufid, zb_zcl_parsed_hdr_t);
-    
-    ESP_LOGI(TAG, "RAW CMD: cluster=0x%04x, cmd=0x%02x, ep=%d",
+    uint8_t *payload = (uint8_t *)zb_buf_begin(bufid);
+    uint8_t payload_len = zb_buf_len(bufid);
+
+    // Alles loggen was reinkommt
+    ESP_LOGI(TAG, "RAW CMD: cluster=0x%04x, cmd=0x%02x, ep=%d, payload_len=%d",
              cmd_info->cluster_id,
              cmd_info->cmd_id,
-             cmd_info->addr_data.common_data.dst_endpoint);
+             cmd_info->addr_data.common_data.dst_endpoint,
+             payload_len);
+
+    // Payload bytes roh ausgeben
+    for (int i = 0; i < payload_len; i++) {
+        ESP_LOGI(TAG, "  payload[%d] = 0x%02x (%d)", i, payload[i], payload[i]);
+    }
 
     // Nur unseren Endpoint behandeln
     if (cmd_info->addr_data.common_data.dst_endpoint != HA_COLOR_DIMMABLE_LIGHT_ENDPOINT) {
@@ -95,21 +143,55 @@ static bool zb_raw_command_handler(uint8_t bufid)
         uint8_t *payload = (uint8_t *)zb_buf_begin(bufid);
         switch (cmd_info->cmd_id) {
             case 0x00: // Move to Level
-            case 0x04: // Move to Level (with On/Off)
-                if (payload) {
-                    uint8_t level = payload[0];
-                    ESP_LOGI(TAG, "RAW: Level=%d", level);
-                    pwm_rgb_driver_set_level(level);
-                    if (cmd_info->cmd_id == 0x04) {
-                        pwm_rgb_driver_set_power(level > 0);
-                    }
-                }
+                ESP_LOGI(TAG, "### RAW: Move to Level ###");
+                break;
+
+            case 0x01: // Move
+            {
+                ESP_LOGI(TAG, "### RAW: Move ###");
+
+                uint8_t current_level = *(uint8_t *)esp_zb_zcl_get_attribute(
+                    HA_COLOR_DIMMABLE_LIGHT_ENDPOINT,
+                    ESP_ZB_ZCL_CLUSTER_ID_LEVEL_CONTROL,
+                    ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                    ESP_ZB_ZCL_ATTR_LEVEL_CONTROL_CURRENT_LEVEL_ID)->data_p;
+
+                light_move_cmd_t cmd = {
+                        .param = LIGHT_PARAM_LEVEL,
+                        .direction = (payload[0] == 0x00) ? +1 : -1,
+                        .rate = payload[1],
+                        .start_level = current_level,
+                    };
+                    BaseType_t result = xQueueOverwrite(s_move_queue, &cmd);
+                    ESP_LOGI(TAG, "Queue result: %d, dir=%d, rate=%d", result, cmd.direction, cmd.rate);
+
+                    return true;
+            }
+
+            case 0x02: // Step
+                ESP_LOGI(TAG, "### RAW: Step ###");
+                break;
+
+            case 0x03: // Stop
+            {
+                ESP_LOGI(TAG, "### RAW: Stop ###");
+                light_move_cmd_t cmd = { .param = LIGHT_PARAM_LEVEL, .direction = 0 };
+                xQueueOverwrite(s_move_queue, &cmd);
                 return true;
+            }
+
+            case 0x04: // Move to Level (with On/Off)
+                ESP_LOGI(TAG, "### RAW: Move to Level with On/Off ###");
+                break;
+
+            default:
+                break;
         }
     }
 
     return false; // alle anderen Commands normal verarbeiten lassen
 }
+
 // <-- Claude
 
 /********************* Define functions **************************/
@@ -321,9 +403,9 @@ static void esp_zb_task(void *pvParameters)
     esp_zb_set_primary_network_channel_set(ESP_ZB_PRIMARY_CHANNEL_MASK);
     
     // Claude -->
-    esp_zb_core_action_handler_register(zb_action_handler);
-    esp_zb_raw_command_handler_register(zb_raw_command_handler); // NEU
-    esp_zb_set_primary_network_channel_set(ESP_ZB_PRIMARY_CHANNEL_MASK);
+    esp_zb_raw_command_handler_register(zb_raw_command_handler);
+    s_move_queue = xQueueCreate(1, sizeof(light_move_cmd_t));
+    xTaskCreate(light_move_task, "light_move", 2048, NULL, 5, NULL);
     // <-- Claude
     ESP_ERROR_CHECK(esp_zb_start(false));
     esp_zb_stack_main_loop();
