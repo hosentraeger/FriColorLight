@@ -42,9 +42,28 @@ const colorlight = {
     vendor: 'redfivedesigns',
     description: 'ESP Zigbee RGBWW light',
 
+    endpoint: (device) => {
+        return {
+            rgb1: 1,
+            rgb2: 2,
+            tw:   3,
+        };
+    },
+
     extend: [
         m.light({
+            endpointNames: ['rgb1'],
             color: {xy: true},
+            brightness: true,
+        }),
+        m.light({
+            endpointNames: ['rgb2'],
+            color: {xy: true},
+            brightness: true,
+        }),
+        m.light({
+            endpointNames: ['tw'],
+            colorTemp: {range: [153, 500]},
             brightness: true,
         }),
     ],

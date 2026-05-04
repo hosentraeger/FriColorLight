@@ -101,3 +101,8 @@ uint8_t pwm_rgb_driver_get_level()
 {
     return s_level;
 }
+
+uint8_t pwm_rgb_driver_get_power()
+{
+    return s_state;
+}

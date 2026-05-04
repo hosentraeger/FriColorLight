@@ -26,7 +26,10 @@
 /* Zigbee configuration */
 #define MAX_CHILDREN                      10                                    /* the max amount of connected devices */
 #define INSTALLCODE_POLICY_ENABLE         false                                 /* enable the install code policy for security */
-#define HA_COLOR_DIMMABLE_LIGHT_ENDPOINT  10                                    /* esp light switch device endpoint */
+// Endpoint-Nummern definieren
+#define HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1  1   // Erster RGB Endpunkt (bereits vorhanden)
+#define HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_2  2   // Zweiter RGB Endpunkt
+#define HA_COLOR_TEMP_LIGHT_ENDPOINT        3   // Tunable White Endpunkt
 #define ESP_ZB_PRIMARY_CHANNEL_MASK       ESP_ZB_TRANSCEIVER_ALL_CHANNELS_MASK  /* Zigbee primary channel mask use in the example */
 
 /* Basic manufacturer information */

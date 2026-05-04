@@ -76,6 +76,8 @@ void pwm_driver_apply ( );
 
 uint8_t pwm_rgb_driver_get_level(void);
 
+uint8_t pwm_rgb_driver_get_power(void);
+
 #ifdef __cplusplus
 } // extern "C"
 #endif
