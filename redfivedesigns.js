@@ -50,6 +50,47 @@ const colorlight = {
         };
     },
 
+    fromZigbee: [{
+        cluster: 'genOnOff',
+        type: ['attributeReport', 'readResponse'],
+        convert: (model, msg, publish, options, meta) => {
+            if (msg.data.hasOwnProperty('onOff')) {
+                const endpointNames = {1: 'rgb1', 2: 'rgb2', 3: 'tw'};
+                const name = endpointNames[msg.endpoint.ID];
+                if (name) return {[`state_${name}`]: msg.data['onOff'] === 1 ? 'ON' : 'OFF'};
+            }
+        },
+    },
+    {
+        cluster: 'genLevelCtrl',
+        type: ['attributeReport', 'readResponse'],
+        convert: (model, msg, publish, options, meta) => {
+            if (msg.data.hasOwnProperty('currentLevel')) {
+                const endpointNames = {1: 'rgb1', 2: 'rgb2', 3: 'tw'};
+                const name = endpointNames[msg.endpoint.ID];
+                if (name) return {[`brightness_${name}`]: msg.data['currentLevel']};
+            }
+        },
+    },
+    {
+        cluster: 'lightingColorCtrl',
+        type: ['attributeReport', 'readResponse'],
+        convert: (model, msg, publish, options, meta) => {
+            const endpointNames = {1: 'rgb1', 2: 'rgb2', 3: 'tw'};
+            const name = endpointNames[msg.endpoint.ID];
+            if (!name) return;
+
+            const result = {};
+            if (msg.data.hasOwnProperty('currentX') && msg.data.hasOwnProperty('currentY')) {
+                result[`color_${name}`] = {x: msg.data['currentX'] / 65535, y: msg.data['currentY'] / 65535};
+            }
+            if (msg.data.hasOwnProperty('colorTemperature')) {
+                result[`color_temp_${name}`] = msg.data['colorTemperature'];
+            }
+            return result;
+        },
+    }],
+
     extend: [
         m.light({
             endpointNames: ['rgb1'],
