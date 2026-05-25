@@ -23,6 +23,15 @@
 #include "zcl_utility.h"
 #include "zboss_api.h"  // für zb_zcl_parsed_hdr_t und ZB_BUF_GET_PARAM
 
+#include "zcl/esp_zigbee_zcl_on_off.h"
+#include "zcl/esp_zigbee_zcl_level.h"
+#include "zcl/esp_zigbee_zcl_color_control.h"
+#include "zboss_api_buf.h"
+
+static uint16_t s_color_x = ESP_ZB_ZCL_COLOR_CONTROL_CURRENT_X_DEF_VALUE;
+static uint16_t s_color_y = ESP_ZB_ZCL_COLOR_CONTROL_CURRENT_Y_DEF_VALUE;
+
+
 #if !defined CONFIG_ZB_ZCZR
 #error Define ZB_ZCZR in idf.py menuconfig to compile light (Router) source code.
 #endif
@@ -34,236 +43,6 @@ static uint8_t vendor[]   = { 14, 'r','e','d','f','i','v','e','d','e','s','i','g
 
 static const char *TAG = "ESP_ZB_COLOR_DIMM_LIGHT";
 
-typedef enum {
-    LIGHT_PARAM_NONE = 0,
-    LIGHT_PARAM_LEVEL,
-    LIGHT_PARAM_COLORTEMP,
-    LIGHT_PARAM_HUE,
-} light_param_t;
-
-typedef enum {
-    LIGHT_MOVE_CONTINUOUS = 0,  // direction + rate, kein Zielwert
-    LIGHT_MOVE_TO_TARGET,       // Zielwert, sofort oder mit Transition
-} light_move_mode_t;
-
-typedef struct {
-    light_param_t     param;
-    light_move_mode_t mode;
-    uint16_t          target_value;  // Nur bei LIGHT_MOVE_TO_TARGET
-    int8_t            direction;     // +1 = up, -1 = down, 0 = stop (nur CONTINUOUS)
-    uint16_t          rate;          // Units/s (CONTINUOUS) oder 0 = sofort (TO_TARGET)
-    uint8_t           endpoint;      // Ziel-Endpunkt für das Attribut
-    bool              with_onoff;
-} light_move_cmd_t;
-
-static QueueHandle_t s_move_queue;
-
-static void zb_report_attribute(uint8_t endpoint, uint16_t cluster_id, uint16_t attr_id);
-
-static void light_off(uint8_t endpoint, uint8_t last_valid_level)
-{
-    uint8_t level = 0;
-    ESP_LOGI(TAG, "LIGHT OFF: EP=%d, last_valid_level=%d", endpoint, last_valid_level);
-    esp_zb_lock_acquire(portMAX_DELAY);
-    
-    // 1. OnLevel setzen (damit er beim nächsten 'On' bekannt ist)
-    esp_zb_zcl_set_attribute_val(
-        endpoint,
-        ESP_ZB_ZCL_CLUSTER_ID_LEVEL_CONTROL,
-        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-        ESP_ZB_ZCL_ATTR_LEVEL_CONTROL_ON_LEVEL_ID,
-        &last_valid_level, 
-        false);
-
-        esp_zb_zcl_set_attribute_val(
-        endpoint,
-        ESP_ZB_ZCL_CLUSTER_ID_LEVEL_CONTROL,
-        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-        ESP_ZB_ZCL_ATTR_LEVEL_CONTROL_CURRENT_LEVEL_ID,
-        &level, 
-        false);
-
-
-    // 2. Hardware ausschalten
-    switch ( endpoint )
-    {
-        case HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1:
-            pwm_rgb_driver_set_power(false);
-            break;
-        case HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_2:
-            break;
-        case HA_COLOR_TEMP_LIGHT_ENDPOINT:
-            break;
-        default:
-            break;
-    }
-    // 3. OnOff-Attribut in der DB setzen
-    uint8_t off = 0;
-    esp_zb_zcl_set_attribute_val(
-        endpoint, // Korrigiert von cmd.endpoint auf endpoint
-        ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
-        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-        ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID,
-        &off, false);
-        
-    esp_zb_lock_release();
-
-    // 4. Beides reporten
-    zb_report_attribute(endpoint, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF, ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID);
-//    zb_report_attribute(endpoint, ESP_ZB_ZCL_CLUSTER_ID_LEVEL_CONTROL, ESP_ZB_ZCL_ATTR_LEVEL_CONTROL_ON_LEVEL_ID);
-}
-
-
-static void light_set(uint8_t endpoint, uint8_t level, bool with_onoff)
-{
-    static TickType_t last_report_time = 0;
-    TickType_t now = xTaskGetTickCount();
-
-    ESP_LOGI(TAG, "LIGHT SET: EP=%d, level=%d, with_onoff=%d", endpoint, level, with_onoff);
-
-    esp_zb_lock_acquire(portMAX_DELAY);
-
-    // 1. Level in der ZCL-Datenbank aktualisieren
-    esp_zb_zcl_set_attribute_val(
-        endpoint,
-        ESP_ZB_ZCL_CLUSTER_ID_LEVEL_CONTROL,
-        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-        ESP_ZB_ZCL_ATTR_LEVEL_CONTROL_CURRENT_LEVEL_ID,
-        &level, 
-        false);
-
-    // 2. Hardware-Steuerung
-    switch (endpoint)
-    {
-        case HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1:
-            if ( with_onoff )
-            {
-                pwm_rgb_driver_set_power(true);
-            }
-            pwm_rgb_driver_set_level(level);
-            break;
-        default:
-            break;
-    }
-
-    // 3. OnOff-Attribut in der DB auf true setzen
-    if ( with_onoff )
-    {
-        uint8_t on = 1;
-        esp_zb_zcl_set_attribute_val(
-            endpoint,
-            ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
-            ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-            ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID,
-            &on, 
-            false);
-    };
-
-    esp_zb_lock_release();
-
-    // 4. Throttled Reporting
-    // Wir prüfen, ob seit dem letzten Report mindestens 200ms vergangen sind
-    if ((now - last_report_time) >= pdMS_TO_TICKS(200))
-    {
-        zb_report_attribute(endpoint, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF, ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID);
-        zb_report_attribute(endpoint, ESP_ZB_ZCL_CLUSTER_ID_LEVEL_CONTROL, ESP_ZB_ZCL_ATTR_LEVEL_CONTROL_CURRENT_LEVEL_ID);
-        
-        last_report_time = now;
-        ESP_LOGD("LIGHT_ON", "Reporting executed for endpoint %d", endpoint);
-    }
-}
-
-static void rgb_light_move_task(void *pvParameters)
-{
-    light_move_cmd_t cmd = {0};
-
-    while (true)
-    {
-        // Neues Command ohne Blockieren prüfen
-        xQueueReceive(s_move_queue, &cmd, 0);
-
-        if (cmd.param == LIGHT_PARAM_LEVEL)
-        {
-            uint8_t current = pwm_rgb_driver_get_level();
-            uint8_t new_level = current;
-
-            if (cmd.mode == LIGHT_MOVE_TO_TARGET)
-            {
-                // --- Zielwert-Modus ---
-                if (cmd.rate == 0)
-                {
-                    // Sofort setzen
-                    new_level = (uint8_t)CLAMP(cmd.target_value, 0, 255);
-                    cmd.direction = 0; // einmalig, danach idle
-                }
-                else
-                {
-                    // Schrittweise zum Ziel
-                    int16_t step = ((uint32_t)cmd.rate * 20) / 1000;
-                    if (step < 1) step = 1;
-
-                    if (current < cmd.target_value)
-                    {
-                        int16_t next = (int16_t)current + step;
-                        new_level = (next >= cmd.target_value) ? (uint8_t)cmd.target_value : (uint8_t)next;
-                    }
-                    else if (current > cmd.target_value)
-                    {
-                        int16_t next = (int16_t)current - step;
-                        new_level = (next <= cmd.target_value) ? (uint8_t)cmd.target_value : (uint8_t)next;
-                    }
-
-                    // Ziel erreicht → stoppen
-                    if (new_level == cmd.target_value)
-                        cmd.direction = 0;
-                }
-            }
-            else // LIGHT_MOVE_CONTINUOUS
-            {
-                // --- Kontinuierlicher Modus ---
-                if (cmd.direction != 0)
-                {
-                    int16_t step = ((uint32_t)cmd.rate * 20) / 1000;
-                    if (step < 1) step = 1;
-
-                    int16_t next = (int16_t)current + cmd.direction * step;
-                    if (next >= 255) { next = 255; cmd.direction = 0; }
-                    if (next <= 0)   { next = 0;   cmd.direction = 0; }
-                    new_level = (uint8_t)next;
-                }
-            }
-
-            if (new_level != current)
-            {
-                if ( new_level > 0 )
-                {
-                    light_set ( cmd.endpoint, new_level, pwm_rgb_driver_get_power() == false && new_level > 0 && cmd.with_onoff );
-                    ESP_LOGI(TAG, "LGHT MV TASK: level=%d", new_level);
-                }
-                else
-                {
-                    light_off ( cmd.endpoint, current );
-                    ESP_LOGI(TAG, "LGHT MV TASK: off, last valid level was %d", current);
-                }
-            }
-        }
-        vTaskDelay(pdMS_TO_TICKS(20));
-    }
-}
-
-static void zb_report_attribute(uint8_t endpoint, uint16_t cluster_id, uint16_t attr_id)
-{
-    esp_zb_zcl_report_attr_cmd_t cmd = {0};
-    cmd.address_mode        = ESP_ZB_APS_ADDR_MODE_DST_ADDR_ENDP_NOT_PRESENT;
-    cmd.attributeID         = attr_id;
-    cmd.direction           = ESP_ZB_ZCL_CMD_DIRECTION_TO_CLI;
-    cmd.clusterID           = cluster_id;
-    cmd.zcl_basic_cmd.src_endpoint = endpoint;
-
-    esp_zb_lock_acquire(portMAX_DELAY);
-    esp_zb_zcl_report_attr_cmd_req(&cmd);
-    esp_zb_lock_release();
-}
 
 static bool zb_raw_command_handler(uint8_t bufid)
 {
@@ -284,140 +63,261 @@ static bool zb_raw_command_handler(uint8_t bufid)
         ESP_LOGI(TAG, "RAW CMD:   payload[%d] = 0x%02x (%d)", i, payload[i], payload[i]);
     }
 
-    uint8_t endpoint = cmd_info->addr_data.common_data.dst_endpoint;
-    if (endpoint != HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1 && endpoint != HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_2 && endpoint != HA_COLOR_TEMP_LIGHT_ENDPOINT)
+/*
+    esp_zb_zcl_attr_t *x_attr = esp_zb_zcl_get_attribute(
+        HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1,
+        ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL,
+        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+        ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_X_ID
+    );
+
+    esp_zb_zcl_attr_t *y_attr = esp_zb_zcl_get_attribute(
+        HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1,
+        ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL,
+        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+        ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_Y_ID
+    );
+
+    uint16_t x_val = x_attr ? *(uint16_t*)x_attr->data_p : 0xFFFF;
+    uint16_t y_val = y_attr ? *(uint16_t*)y_attr->data_p : 0xFFFF;
+    ESP_LOGI(TAG, "RAW: stored XY = (%u, %u)", x_val, y_val);
+*/
+
+    return false;
+
+/*
+    ESP_LOGI(TAG, "buf_len=%d", zb_buf_len(bufid));
+    uint8_t *raw = (uint8_t *)zb_buf_begin(bufid);
+    ESP_LOGI(TAG, "raw bytes: %02x %02x %02x %02x %02x %02x %02x %02x",
+            raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7]);
+
+    if (cmd_info->cluster_id != ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL) {
         return false;
-
-    if (cmd_info->cluster_id == ESP_ZB_ZCL_CLUSTER_ID_ON_OFF) 
-    {
-        switch (cmd_info->cmd_id) 
-        {
-            case 0x00: // Off
-                ESP_LOGI(TAG, "RAW CMD:   OFF");
-                light_off(endpoint, pwm_rgb_driver_get_level());
-                return true;
-
-            case 0x01: // On
-                ESP_LOGI(TAG, "RAW CMD:   ON");
-                light_set(endpoint, pwm_rgb_driver_get_level() > 0 ? pwm_rgb_driver_get_level() : 128, true);
-                return true;
-                
-            case 0x02: // Toggle
-            {
-                bool current_state = pwm_rgb_driver_get_power();
-                bool new_state = !current_state;
-                ESP_LOGI(TAG, "RAW CMD: TOGGLE to %d on EP %d", new_state, endpoint);
-                if ( new_state )
-                {
-                    light_set(endpoint, pwm_rgb_driver_get_level() > 0 ? pwm_rgb_driver_get_level() : 128, true);
-                }
-                else
-                {
-                    light_off(endpoint, pwm_rgb_driver_get_level());
-                }                
-                return true; 
-            }
-        }
     }
 
-    if (cmd_info->cluster_id == ESP_ZB_ZCL_CLUSTER_ID_LEVEL_CONTROL) 
+    ESP_LOGI(TAG, "COLOR CMD: cmd_id=0x%02x", cmd_info->cmd_id);
+
+    switch (cmd_info->cmd_id)
     {
-        // Payload nach dem Header auslesen
-        uint8_t *payload = (uint8_t *)zb_buf_begin(bufid);
-        switch (cmd_info->cmd_id) 
-        {
-            case 0x00: // Move to Level
-            {
-                ESP_LOGI(TAG, "RAW CMD:   Move to Level");
-                light_move_cmd_t cmd = {
-                    .param        = LIGHT_PARAM_LEVEL,
-                    .mode         = LIGHT_MOVE_TO_TARGET,
-                    .target_value = payload[0],
-                    .rate         = (uint16_t)(payload[1] | (payload[2] << 8)),
-                    .with_onoff   = false
-                };
-                xQueueOverwrite(s_move_queue, &cmd);
-                return true;
-            }
+        case ZB_ZCL_CMD_COLOR_CONTROL_MOVE_TO_COLOR: {
+            ESP_LOGI(TAG, "MOVE_TO_COLOR: parsing...");
+            zb_zcl_color_control_move_to_color_req_t req;
+            zb_zcl_parse_status_t status;
+            ZB_ZCL_COLOR_CONTROL_GET_MOVE_TO_COLOR_REQ(bufid, req, status);
 
-            case 0x01: // Move
-            {
-                ESP_LOGI(TAG, "RAW CMD:   Move");
-                light_move_cmd_t cmd = {
-                    .param      = LIGHT_PARAM_LEVEL,
-                    .mode       = LIGHT_MOVE_CONTINUOUS,
-                    .direction  = (payload[0] == 0x00) ? +1 : -1,
-                    .rate       = payload[1],
-                    .with_onoff = false
-                };
-                xQueueOverwrite(s_move_queue, &cmd);
-                return true;
-            }
+            ESP_LOGI(TAG, "MOVE_TO_COLOR: status=%d x=%d y=%d trans=%d",
+                     status, req.color_x, req.color_y, req.transition_time);
 
-            case 0x02: // Step
-                ESP_LOGI(TAG, "RAW CMD:   Step");
-                break;
-
-            case 0x03: // Stop
-            {
-                ESP_LOGI(TAG, "RAW CMD:   Stop");
-                light_move_cmd_t cmd = { .param = LIGHT_PARAM_LEVEL, .direction = 0 };
-                xQueueOverwrite(s_move_queue, &cmd);
-                zb_report_attribute(
-                    endpoint,
-                    ESP_ZB_ZCL_CLUSTER_ID_LEVEL_CONTROL,
-                    ESP_ZB_ZCL_ATTR_LEVEL_CONTROL_CURRENT_LEVEL_ID);
-
-                return true;
-            }
-
-            case 0x04: // Move to Level (with On/Off)
-            {
-                ESP_LOGI(TAG, "RAW CMD:   Move to Level with On/Off");
-                light_move_cmd_t cmd = {
-                    .param        = LIGHT_PARAM_LEVEL,
-                    .mode         = LIGHT_MOVE_TO_TARGET,
-                    .target_value = payload[0],
-                    .rate         = (uint16_t)(payload[1] | (payload[2] << 8)),
-                    .with_onoff   = true
-                };
-                xQueueOverwrite(s_move_queue, &cmd);
-                return true;
-            }
-
-            case 0x05: // Move (with On/Off)
-            {
-                ESP_LOGI(TAG, "RAW CMD:   Move with On/Off");
-                light_move_cmd_t cmd = {
-                    .param      = LIGHT_PARAM_LEVEL,
-                    .mode       = LIGHT_MOVE_CONTINUOUS,
-                    .direction  = (payload[0] == 0x00) ? +1 : -1,
-                    .rate       = payload[1],
-                    .with_onoff = true
-                };
-                xQueueOverwrite(s_move_queue, &cmd);
-                return true;
-            }
-
-            default:
+            if (status != ZB_ZCL_PARSE_STATUS_SUCCESS) {
+                ESP_LOGW(TAG, "MOVE_TO_COLOR parse failed");
                 return false;
+            }
+
+            if (req.color_x == 0 && req.color_y == 0) {
+                ESP_LOGI(TAG, "MOVE_TO_COLOR 0/0 ignoriert");
+                return false;
+            }
+
+            s_color_x = req.color_x;
+            s_color_y = req.color_y;
+            pwm_rgb_driver_set_color_xy(s_color_x, s_color_y);
+            pwm_driver_apply();
+
+            esp_zb_zcl_set_attribute_val(
+                HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1,
+                ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL,
+                ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_X_ID,
+                &s_color_x, false);
+            esp_zb_zcl_set_attribute_val(
+                HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1,
+                ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL,
+                ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_Y_ID,
+                &s_color_y, false);
+            break;
         }
+
+        case ZB_ZCL_CMD_COLOR_CONTROL_MOVE_TO_COLOR_TEMPERATURE: {
+            ESP_LOGI(TAG, "MOVE_TO_COLOR_TEMP: parsing...");
+            zb_zcl_color_control_move_to_color_temperature_req_t req;
+            zb_zcl_parse_status_t status;
+            ZB_ZCL_COLOR_CONTROL_GET_MOVE_TO_COLOR_TEMPERATURE_REQ(bufid, req, status);
+
+            ESP_LOGI(TAG, "MOVE_TO_COLOR_TEMP: status=%d mireds=%d trans=%d",
+                     status, req.color_temperature, req.transition_time);
+
+            if (status != ZB_ZCL_PARSE_STATUS_SUCCESS) {
+                ESP_LOGW(TAG, "MOVE_TO_COLOR_TEMP parse failed");
+                return false;
+            }
+            // für RGB-Leuchte vorerst ignorieren
+            break;
+        }
+
+        default:
+            ESP_LOGI(TAG, "COLOR CMD 0x%02x unbehandelt", cmd_info->cmd_id);
+            break;
     }
 
-    return false; // alle anderen Commands normal verarbeiten lassen
+    return false;
+*/
 }
 
 static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id, const void *message)
 {
-    ESP_LOGI(TAG, "ACTION: callback_id=0x%x", callback_id);
-    
-    if (callback_id == ESP_ZB_CORE_SET_ATTR_VALUE_CB_ID) {
-        esp_zb_zcl_set_attr_value_message_t *msg = (esp_zb_zcl_set_attr_value_message_t *)message;
-        ESP_LOGI(TAG, "ACTION: SET_ATTR ep=%d cluster=0x%04x attr=0x%04x",
-                 msg->info.dst_endpoint,
-                 msg->info.cluster,
-                 msg->attribute.id);
+    if (callback_id != ESP_ZB_CORE_SET_ATTR_VALUE_CB_ID) {
+        ESP_LOGD(TAG, "unhandled CB 0x%04x", callback_id);
+        return ESP_OK;
     }
+
+    esp_zb_zcl_attr_t *attr_x_ptr = esp_zb_zcl_get_attribute(
+        HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1,
+        ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL,
+        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+        ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_X_ID
+    );
+
+    esp_zb_zcl_attr_t *attr_y_ptr = esp_zb_zcl_get_attribute(
+        HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1,
+        ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL,
+        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+        ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_Y_ID
+    );
+
+    uint16_t x_val = attr_x_ptr ? *(uint16_t*)attr_x_ptr->data_p : 0xFFFF;
+    uint16_t y_val = attr_y_ptr ? *(uint16_t*)attr_y_ptr->data_p : 0xFFFF;
+
+    ESP_LOGI(TAG, "ACTION: stored XY = (%u, %u)", x_val, y_val);
+
+    esp_zb_zcl_set_attr_value_message_t *msg =
+        (esp_zb_zcl_set_attr_value_message_t *)message;
+
+    uint16_t cluster = msg->info.cluster;
+    uint16_t attr    = msg->attribute.id;
+
+    ESP_LOGI(TAG, "ACTION: cluster=0x%04X attr=0x%04X", cluster, attr);
+
+    switch (cluster) {
+
+        // ── ON / OFF ──────────────────────────────────────────────────────
+        case ESP_ZB_ZCL_CLUSTER_ID_ON_OFF: {
+            if (attr == ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID) {
+                bool on = *(bool *)msg->attribute.data.value;
+                ESP_LOGI(TAG, "ON/OFF → %s", on ? "ON" : "OFF");
+                pwm_rgb_driver_set_power(on);
+                pwm_driver_apply();
+
+                // beim OFF die Farbattribute auf letzten bekannten Wert einfrieren
+                // damit z2m beim nächsten ON nicht von 0/0 interpoliert
+                if (!on) {
+                    esp_zb_zcl_set_attribute_val(
+                        HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1,
+                        ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL,
+                        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                        ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_X_ID,
+                        &s_color_x, false);
+                    esp_zb_zcl_set_attribute_val(
+                        HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1,
+                        ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL,
+                        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                        ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_Y_ID,
+                        &s_color_y, false);
+                }
+            }
+            break;
+        }
+
+        // ── LEVEL ─────────────────────────────────────────────────────────
+        case ESP_ZB_ZCL_CLUSTER_ID_LEVEL_CONTROL: {
+            if (attr == ESP_ZB_ZCL_ATTR_LEVEL_CONTROL_CURRENT_LEVEL_ID) {
+                uint8_t level = *(uint8_t *)msg->attribute.data.value;
+                ESP_LOGI(TAG, "LEVEL → %d", level);
+                pwm_rgb_driver_set_level(level);
+                pwm_driver_apply();
+    
+                esp_zb_zcl_set_attribute_val(
+                    HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1,
+                    ESP_ZB_ZCL_CLUSTER_ID_LEVEL_CONTROL,
+                    ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                    ESP_ZB_ZCL_ATTR_LEVEL_CONTROL_CURRENT_LEVEL_ID,
+                    &level, false);
+                }
+            break;
+        }
+
+        // ── COLOR CONTROL ─────────────────────────────────────────────────
+        case ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL: {
+            
+            switch (attr) {
+
+                case ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_HUE_ID: {
+                    uint8_t s_current_hue = *(uint8_t *)msg->attribute.data.value;
+                    ESP_LOGI(TAG, "HUE → %d", s_current_hue);
+                    break;
+                }
+
+                case ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_SATURATION_ID: {
+                    uint8_t s_current_sat = *(uint8_t *)msg->attribute.data.value;
+                    ESP_LOGI(TAG, "SAT → %d", s_current_sat);
+                    break;
+                }
+
+                case ESP_ZB_ZCL_ATTR_COLOR_CONTROL_ENHANCED_CURRENT_HUE_ID: {
+                    ESP_LOGI(TAG, "ENHANCED_HUE" );
+                    break;
+                }
+
+                case ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_X_ID:
+                    s_color_x = *(uint16_t *)msg->attribute.data.value;
+                    break;
+
+                case ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_Y_ID: {
+                    uint16_t y = *(uint16_t *)msg->attribute.data.value;
+                    
+                    // 0/0 ist kein gültiger Farbwert – ignorieren
+                    if (s_color_x == 0 && y == 0) {
+                        ESP_LOGD(TAG, "XY 0/0 ignoriert");
+                        break;
+                    }
+                    
+                    s_color_y = y;
+                    pwm_rgb_driver_set_color_xy(s_color_x, s_color_y);
+                    pwm_driver_apply();
+
+                    esp_err_t err_x = esp_zb_zcl_set_attribute_val(
+                        HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1,
+                        ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL,
+                        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                        ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_X_ID,
+                        &s_color_x, false);
+                    esp_err_t err_y = esp_zb_zcl_set_attribute_val(
+                        HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1,
+                        ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL,
+                        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                        ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_Y_ID,
+                        &s_color_y, false);
+                    break;
+                }
+
+                case ESP_ZB_ZCL_ATTR_COLOR_CONTROL_COLOR_TEMPERATURE_ID: {
+                    uint16_t mireds = *(uint16_t *)msg->attribute.data.value;
+                    ESP_LOGI(TAG, "COLOR_TEMP → %d mireds (RGB-Leuchte, ignoriert)", mireds);
+                    break;
+                }
+
+                default:
+                    ESP_LOGD(TAG, "COLOR attr=0x%04x (unbekannt)", attr);
+                    break;
+            }
+            break;
+        }
+
+        default:
+            ESP_LOGD(TAG, "cluster=0x%04x attr=0x%04x (ignoriert)", cluster, attr);
+            break;
+    }
+
     return ESP_OK;
 }
 
@@ -526,6 +426,35 @@ static void esp_zb_task(void *pvParameters)
     esp_zcl_utility_add_ep_basic_manufacturer_info(
         ep_list, HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1, &info);
 
+    // ── fehlende Attribute zum Color-Cluster hinzufügen ───────────────────
+    esp_zb_cluster_list_t *cluster_list_1 = esp_zb_ep_list_get_ep(
+        ep_list, HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1);
+
+    esp_zb_attribute_list_t *color_attrs_1 = esp_zb_cluster_list_get_cluster(
+        cluster_list_1,
+        ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL,
+        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+
+    uint8_t  sat         = 0;
+    uint16_t enh_hue     = 0;
+    uint16_t capabilities = 0x0008; // Bit3 = XY supported
+
+    esp_zb_color_control_cluster_add_attr(
+        color_attrs_1,
+        ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_SATURATION_ID, 
+        &sat);
+
+    esp_zb_color_control_cluster_add_attr(
+        color_attrs_1,
+        ESP_ZB_ZCL_ATTR_COLOR_CONTROL_ENHANCED_CURRENT_HUE_ID, 
+        &enh_hue);
+
+/*
+    esp_zb_color_control_cluster_add_attr(
+        color_attrs_1,
+        ESP_ZB_ZCL_ATTR_COLOR_CONTROL_COLOR_CAPABILITIES_ID, 
+        &capabilities);
+*/
     // ── Endpunkt 2: RGB ──────────────────────────────────────────────────
     esp_zb_color_dimmable_light_cfg_t light_cfg_2 = ESP_ZB_DEFAULT_COLOR_DIMMABLE_LIGHT_CONFIG();
     esp_zb_cluster_list_t *cluster_list_2 = esp_zb_color_dimmable_light_clusters_create(&light_cfg_2);
@@ -560,10 +489,15 @@ static void esp_zb_task(void *pvParameters)
 
     uint16_t ct_min = 153;  // 6500K
     uint16_t ct_max = 500;  // 2000K
-    esp_zb_color_control_cluster_add_attr(color_attrs,
-        ESP_ZB_ZCL_ATTR_COLOR_CONTROL_COLOR_TEMP_PHYSICAL_MIN_MIREDS_ID, &ct_min);
-    esp_zb_color_control_cluster_add_attr(color_attrs,
-        ESP_ZB_ZCL_ATTR_COLOR_CONTROL_COLOR_TEMP_PHYSICAL_MAX_MIREDS_ID, &ct_max);
+    esp_zb_color_control_cluster_add_attr(
+        color_attrs,
+        ESP_ZB_ZCL_ATTR_COLOR_CONTROL_COLOR_TEMP_PHYSICAL_MIN_MIREDS_ID, 
+        &ct_min);
+        
+    esp_zb_color_control_cluster_add_attr(
+        color_attrs,
+        ESP_ZB_ZCL_ATTR_COLOR_CONTROL_COLOR_TEMP_PHYSICAL_MAX_MIREDS_ID, 
+        &ct_max);
 
     esp_zb_endpoint_config_t ep3_cfg = {
         .endpoint           = HA_COLOR_TEMP_LIGHT_ENDPOINT,
@@ -579,17 +513,94 @@ static void esp_zb_task(void *pvParameters)
     // ── Alle Endpunkte registrieren ──────────────────────────────────────
     esp_zb_device_register(ep_list);
 
+    // Danach nur noch Werte setzen für bereits existierende Attribute:
+    uint8_t color_mode = 1; // XY
+    esp_zb_zcl_set_attribute_val(
+        HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1,
+        ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL,
+        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+        ESP_ZB_ZCL_ATTR_COLOR_CONTROL_COLOR_MODE_ID, 
+        &color_mode, 
+        false);
+
+    esp_zb_zcl_set_attribute_val(
+        HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1,
+        ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL,
+        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+        ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_X_ID,
+        &s_color_x, 
+        false
+    );
+
+    esp_zb_zcl_set_attribute_val(
+        HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1,
+        ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL,
+        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+        ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_Y_ID,
+        &s_color_y, 
+        false
+    );
+
+    uint16_t caps = 0x0008; // XY only
+    esp_zb_zcl_set_attribute_val(
+        HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1,
+        ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL,
+        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+        ESP_ZB_ZCL_ATTR_COLOR_CONTROL_COLOR_CAPABILITIES_ID,
+        &caps,
+        false
+    );
+    
+/*
+    uint16_t ct_min = 153;  // 6500K
+    uint16_t ct_max = 500;  // 2000K
+
+    esp_zb_zcl_set_attribute_val(
+        HA_COLOR_TEMP_LIGHT_ENDPOINT,
+        ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL,
+        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+        ESP_ZB_ZCL_ATTR_COLOR_CONTROL_COLOR_TEMP_PHYSICAL_MIN_MIREDS_ID,
+        &ct_min,
+        false);
+
+    esp_zb_zcl_set_attribute_val(
+        HA_COLOR_TEMP_LIGHT_ENDPOINT,
+        ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL,
+        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+        ESP_ZB_ZCL_ATTR_COLOR_CONTROL_COLOR_TEMP_PHYSICAL_MAX_MIREDS_ID,
+        &ct_max,
+        false);
+*/
+    esp_zb_zcl_reporting_info_t report_x = {
+        .direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_CLI,
+        .ep = HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1,
+        .cluster_id = ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL,
+        .cluster_role = ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+        .attr_id = ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_X_ID,
+        .flags = 0,
+        .u.send_info.min_interval = 1,
+        .u.send_info.max_interval = 0,
+        .u.send_info.delta.u16 = 1,
+        .u.send_info.def_min_interval = 1,
+        .u.send_info.def_max_interval = 0,
+        .dst.profile_id = ESP_ZB_AF_HA_PROFILE_ID,
+        .manuf_code = ESP_ZB_ZCL_ATTR_NON_MANUFACTURER_SPECIFIC,
+    };
+    esp_zb_zcl_update_reporting_info(&report_x);
+
+    esp_zb_zcl_reporting_info_t report_y = report_x;
+    report_y.attr_id = ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_Y_ID;
+    esp_zb_zcl_update_reporting_info(&report_y);
+        
     esp_zb_set_primary_network_channel_set(ESP_ZB_PRIMARY_CHANNEL_MASK);
     esp_zb_raw_command_handler_register(zb_raw_command_handler);
-    s_move_queue = xQueueCreate(1, sizeof(light_move_cmd_t));
-    xTaskCreate(rgb_light_move_task, "rgb_light_move", 2048, NULL, 5, NULL);
-
 
     esp_zb_core_action_handler_register(zb_action_handler);
 
     ESP_ERROR_CHECK(esp_zb_start(false));
     esp_zb_stack_main_loop();
 }
+
 
 void app_main(void)
 {
