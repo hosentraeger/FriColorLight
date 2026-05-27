@@ -36,6 +36,14 @@ static uint16_t s_color_y = ESP_ZB_ZCL_COLOR_CONTROL_CURRENT_Y_DEF_VALUE;
 #error Define ZB_ZCZR in idf.py menuconfig to compile light (Router) source code.
 #endif
 
+enum {
+    COLOR_CAPABILITY_SUPPORT_HUE_SATURATION = 1 << 0,
+    COLOR_CAPABILITY_SUPPORT_ENHANCED_HUE_SATURATION = 1 << 1,
+    COLOR_CAPABILITY_SUPPORT_COLOR_LOOP = 1 << 2,
+    COLOR_CAPABILITY_SUPPORT_XY = 1 << 3,
+    COLOR_CAPABILITY_SUPPORT_COLOR_TEMPERATURE = 1 << 4,
+} COLOR_CAPABILITIES;
+
 #define CLAMP(x, lo, hi) ((x) < (lo) ? (lo) : ((x) > (hi) ? (hi) : (x)))
 
 static uint8_t model_id[] = { 16, 'r','g','b','w','w','-','c','o','l','o','r','l','i','g','h','t' };
@@ -43,6 +51,8 @@ static uint8_t vendor[]   = { 14, 'r','e','d','f','i','v','e','d','e','s','i','g
 
 static const char *TAG = "ESP_ZB_COLOR_DIMM_LIGHT";
 
+static uint8_t s_current_hue = 0;
+static uint8_t s_current_sat = 254;
 
 static bool zb_raw_command_handler(uint8_t bufid)
 {
@@ -62,106 +72,7 @@ static bool zb_raw_command_handler(uint8_t bufid)
     {
         ESP_LOGI(TAG, "RAW CMD:   payload[%d] = 0x%02x (%d)", i, payload[i], payload[i]);
     }
-
-/*
-    esp_zb_zcl_attr_t *x_attr = esp_zb_zcl_get_attribute(
-        HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1,
-        ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL,
-        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-        ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_X_ID
-    );
-
-    esp_zb_zcl_attr_t *y_attr = esp_zb_zcl_get_attribute(
-        HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1,
-        ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL,
-        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-        ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_Y_ID
-    );
-
-    uint16_t x_val = x_attr ? *(uint16_t*)x_attr->data_p : 0xFFFF;
-    uint16_t y_val = y_attr ? *(uint16_t*)y_attr->data_p : 0xFFFF;
-    ESP_LOGI(TAG, "RAW: stored XY = (%u, %u)", x_val, y_val);
-*/
-
     return false;
-
-/*
-    ESP_LOGI(TAG, "buf_len=%d", zb_buf_len(bufid));
-    uint8_t *raw = (uint8_t *)zb_buf_begin(bufid);
-    ESP_LOGI(TAG, "raw bytes: %02x %02x %02x %02x %02x %02x %02x %02x",
-            raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7]);
-
-    if (cmd_info->cluster_id != ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL) {
-        return false;
-    }
-
-    ESP_LOGI(TAG, "COLOR CMD: cmd_id=0x%02x", cmd_info->cmd_id);
-
-    switch (cmd_info->cmd_id)
-    {
-        case ZB_ZCL_CMD_COLOR_CONTROL_MOVE_TO_COLOR: {
-            ESP_LOGI(TAG, "MOVE_TO_COLOR: parsing...");
-            zb_zcl_color_control_move_to_color_req_t req;
-            zb_zcl_parse_status_t status;
-            ZB_ZCL_COLOR_CONTROL_GET_MOVE_TO_COLOR_REQ(bufid, req, status);
-
-            ESP_LOGI(TAG, "MOVE_TO_COLOR: status=%d x=%d y=%d trans=%d",
-                     status, req.color_x, req.color_y, req.transition_time);
-
-            if (status != ZB_ZCL_PARSE_STATUS_SUCCESS) {
-                ESP_LOGW(TAG, "MOVE_TO_COLOR parse failed");
-                return false;
-            }
-
-            if (req.color_x == 0 && req.color_y == 0) {
-                ESP_LOGI(TAG, "MOVE_TO_COLOR 0/0 ignoriert");
-                return false;
-            }
-
-            s_color_x = req.color_x;
-            s_color_y = req.color_y;
-            pwm_rgb_driver_set_color_xy(s_color_x, s_color_y);
-            pwm_driver_apply();
-
-            esp_zb_zcl_set_attribute_val(
-                HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1,
-                ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL,
-                ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-                ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_X_ID,
-                &s_color_x, false);
-            esp_zb_zcl_set_attribute_val(
-                HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1,
-                ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL,
-                ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-                ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_Y_ID,
-                &s_color_y, false);
-            break;
-        }
-
-        case ZB_ZCL_CMD_COLOR_CONTROL_MOVE_TO_COLOR_TEMPERATURE: {
-            ESP_LOGI(TAG, "MOVE_TO_COLOR_TEMP: parsing...");
-            zb_zcl_color_control_move_to_color_temperature_req_t req;
-            zb_zcl_parse_status_t status;
-            ZB_ZCL_COLOR_CONTROL_GET_MOVE_TO_COLOR_TEMPERATURE_REQ(bufid, req, status);
-
-            ESP_LOGI(TAG, "MOVE_TO_COLOR_TEMP: status=%d mireds=%d trans=%d",
-                     status, req.color_temperature, req.transition_time);
-
-            if (status != ZB_ZCL_PARSE_STATUS_SUCCESS) {
-                ESP_LOGW(TAG, "MOVE_TO_COLOR_TEMP parse failed");
-                return false;
-            }
-            // für RGB-Leuchte vorerst ignorieren
-            break;
-        }
-
-        default:
-            ESP_LOGI(TAG, "COLOR CMD 0x%02x unbehandelt", cmd_info->cmd_id);
-            break;
-    }
-
-    return false;
-*/
 }
 
 static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id, const void *message)
@@ -170,25 +81,6 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
         ESP_LOGD(TAG, "unhandled CB 0x%04x", callback_id);
         return ESP_OK;
     }
-
-    esp_zb_zcl_attr_t *attr_x_ptr = esp_zb_zcl_get_attribute(
-        HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1,
-        ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL,
-        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-        ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_X_ID
-    );
-
-    esp_zb_zcl_attr_t *attr_y_ptr = esp_zb_zcl_get_attribute(
-        HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1,
-        ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL,
-        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-        ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_Y_ID
-    );
-
-    uint16_t x_val = attr_x_ptr ? *(uint16_t*)attr_x_ptr->data_p : 0xFFFF;
-    uint16_t y_val = attr_y_ptr ? *(uint16_t*)attr_y_ptr->data_p : 0xFFFF;
-
-    ESP_LOGI(TAG, "ACTION: stored XY = (%u, %u)", x_val, y_val);
 
     esp_zb_zcl_set_attr_value_message_t *msg =
         (esp_zb_zcl_set_attr_value_message_t *)message;
@@ -207,23 +99,6 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
                 ESP_LOGI(TAG, "ON/OFF → %s", on ? "ON" : "OFF");
                 pwm_rgb_driver_set_power(on);
                 pwm_driver_apply();
-
-                // beim OFF die Farbattribute auf letzten bekannten Wert einfrieren
-                // damit z2m beim nächsten ON nicht von 0/0 interpoliert
-                if (!on) {
-                    esp_zb_zcl_set_attribute_val(
-                        HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1,
-                        ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL,
-                        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-                        ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_X_ID,
-                        &s_color_x, false);
-                    esp_zb_zcl_set_attribute_val(
-                        HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1,
-                        ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL,
-                        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-                        ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_Y_ID,
-                        &s_color_y, false);
-                }
             }
             break;
         }
@@ -235,13 +110,6 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
                 ESP_LOGI(TAG, "LEVEL → %d", level);
                 pwm_rgb_driver_set_level(level);
                 pwm_driver_apply();
-    
-                esp_zb_zcl_set_attribute_val(
-                    HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1,
-                    ESP_ZB_ZCL_CLUSTER_ID_LEVEL_CONTROL,
-                    ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-                    ESP_ZB_ZCL_ATTR_LEVEL_CONTROL_CURRENT_LEVEL_ID,
-                    &level, false);
                 }
             break;
         }
@@ -252,19 +120,28 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
             switch (attr) {
 
                 case ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_HUE_ID: {
-                    uint8_t s_current_hue = *(uint8_t *)msg->attribute.data.value;
+                    s_current_hue = *(uint8_t *)msg->attribute.data.value;
                     ESP_LOGI(TAG, "HUE → %d", s_current_hue);
+                    pwm_rgb_driver_set_color_hue_sat(s_current_hue, s_current_sat);
+                    pwm_driver_apply();
                     break;
                 }
 
                 case ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_SATURATION_ID: {
-                    uint8_t s_current_sat = *(uint8_t *)msg->attribute.data.value;
+                    s_current_sat = *(uint8_t *)msg->attribute.data.value;
                     ESP_LOGI(TAG, "SAT → %d", s_current_sat);
+                    pwm_rgb_driver_set_color_hue_sat(s_current_hue, s_current_sat);
+                    pwm_driver_apply();
                     break;
                 }
 
                 case ESP_ZB_ZCL_ATTR_COLOR_CONTROL_ENHANCED_CURRENT_HUE_ID: {
-                    ESP_LOGI(TAG, "ENHANCED_HUE" );
+                    uint16_t enh_hue = *(uint16_t *)msg->attribute.data.value;
+                    // 16-bit → 8-bit: 65535 entspricht 254
+                    s_current_hue = (uint8_t)((uint32_t)enh_hue * 254 / 65535);
+                    ESP_LOGI(TAG, "ENHANCED_HUE → %d (raw %d)", s_current_hue, enh_hue);
+                    pwm_rgb_driver_set_color_hue_sat(s_current_hue, s_current_sat);
+                    pwm_driver_apply();
                     break;
                 }
 
@@ -284,19 +161,6 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
                     s_color_y = y;
                     pwm_rgb_driver_set_color_xy(s_color_x, s_color_y);
                     pwm_driver_apply();
-
-                    esp_err_t err_x = esp_zb_zcl_set_attribute_val(
-                        HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1,
-                        ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL,
-                        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-                        ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_X_ID,
-                        &s_color_x, false);
-                    esp_err_t err_y = esp_zb_zcl_set_attribute_val(
-                        HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1,
-                        ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL,
-                        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-                        ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_Y_ID,
-                        &s_color_y, false);
                     break;
                 }
 
@@ -321,7 +185,6 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
     return ESP_OK;
 }
 
-/********************* Define functions **************************/
 static esp_err_t deferred_driver_init(void)
 {
     static bool is_inited = false;
@@ -408,195 +271,113 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
     }
 }
 
-
 static void esp_zb_task(void *pvParameters)
 {
     esp_zb_cfg_t zb_nwk_cfg = ESP_ZB_ZR_CONFIG();
     esp_zb_init(&zb_nwk_cfg);
 
-    zcl_basic_manufacturer_info_t info = {
-        .manufacturer_name = (char *)vendor,
-        .model_identifier = (char *)model_id,
+    esp_zb_on_off_cluster_cfg_t on_off_cfg = {
+            .on_off = ESP_ZB_ZCL_ON_OFF_ON_OFF_DEFAULT_VALUE
     };
 
-    // ── Endpunkt 1: RGB (bestehend) ──────────────────────────────────────
-    esp_zb_color_dimmable_light_cfg_t light_cfg_1 = ESP_ZB_DEFAULT_COLOR_DIMMABLE_LIGHT_CONFIG();
-    esp_zb_ep_list_t *ep_list = esp_zb_color_dimmable_light_ep_create(
-        HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1, &light_cfg_1);
-    esp_zcl_utility_add_ep_basic_manufacturer_info(
-        ep_list, HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1, &info);
+    esp_zb_level_cluster_cfg_t level_cfg = {
+            .current_level = 0x7f
+    };
 
-    // ── fehlende Attribute zum Color-Cluster hinzufügen ───────────────────
-    esp_zb_cluster_list_t *cluster_list_1 = esp_zb_ep_list_get_ep(
-        ep_list, HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1);
+    esp_zb_basic_cluster_cfg_t basic_cfg = {
+            .zcl_version = 8,
+            .power_source = 1
+    };
 
-    esp_zb_attribute_list_t *color_attrs_1 = esp_zb_cluster_list_get_cluster(
-        cluster_list_1,
-        ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL,
-        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+    esp_zb_identify_cluster_cfg_t identity_cfg = {
+            .identify_time = 0
+    };
 
-    uint8_t  sat         = 0;
-    uint16_t enh_hue     = 0;
-    uint16_t capabilities = 0x0008; // Bit3 = XY supported
+    esp_zb_groups_cluster_cfg_t groups_cfg = {
+            .groups_name_support_id = 0
+    };
 
-    esp_zb_color_control_cluster_add_attr(
-        color_attrs_1,
-        ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_SATURATION_ID, 
-        &sat);
+    esp_zb_scenes_cluster_cfg_t scenes_cfg = {
+            0, 0, 0, false, 0
+    };
 
-    esp_zb_color_control_cluster_add_attr(
-        color_attrs_1,
-        ESP_ZB_ZCL_ATTR_COLOR_CONTROL_ENHANCED_CURRENT_HUE_ID, 
-        &enh_hue);
+    uint16_t color_capabilities = COLOR_CAPABILITY_SUPPORT_XY | COLOR_CAPABILITY_SUPPORT_HUE_SATURATION | COLOR_CAPABILITY_SUPPORT_ENHANCED_HUE_SATURATION;
 
-/*
-    esp_zb_color_control_cluster_add_attr(
-        color_attrs_1,
-        ESP_ZB_ZCL_ATTR_COLOR_CONTROL_COLOR_CAPABILITIES_ID, 
-        &capabilities);
-*/
-    // ── Endpunkt 2: RGB ──────────────────────────────────────────────────
-    esp_zb_color_dimmable_light_cfg_t light_cfg_2 = ESP_ZB_DEFAULT_COLOR_DIMMABLE_LIGHT_CONFIG();
-    esp_zb_cluster_list_t *cluster_list_2 = esp_zb_color_dimmable_light_clusters_create(&light_cfg_2);
+     // IN-Cluster (Server-Seite - empfängt Befehle von Coordinator)
+    uint16_t zero = 0;
+    uint8_t  zero_u8 = 0;   // Wichtig für Options (8-Bit)
+    uint8_t  max_sat = 254; // Standardmäßig voll gesättigt
+    uint16_t mireds = 500;
+    uint16_t mireds_max = 500;
+    uint16_t mireds_min = 153;
+    uint8_t color_mode = 2;
+    uint16_t enhanced_hue = 0;
 
-    esp_zb_endpoint_config_t ep2_cfg = {
-        .endpoint       = HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_2,
+    esp_zb_attribute_list_t* esp_zb_color_cluster = esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL);
+    ESP_ERROR_CHECK(esp_zb_color_control_cluster_add_attr(esp_zb_color_cluster, ESP_ZB_ZCL_ATTR_COLOR_CONTROL_COLOR_CAPABILITIES_ID, &color_capabilities));
+    ESP_ERROR_CHECK(esp_zb_color_control_cluster_add_attr(esp_zb_color_cluster, ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_X_ID, &zero));
+    ESP_ERROR_CHECK(esp_zb_color_control_cluster_add_attr(esp_zb_color_cluster, ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_Y_ID, &zero));
+    ESP_ERROR_CHECK(esp_zb_color_control_cluster_add_attr(esp_zb_color_cluster, ESP_ZB_ZCL_ATTR_COLOR_CONTROL_COLOR_TEMPERATURE_ID, &mireds));
+    ESP_ERROR_CHECK(esp_zb_color_control_cluster_add_attr(esp_zb_color_cluster, ESP_ZB_ZCL_ATTR_COLOR_CONTROL_COLOR_MODE_ID, &color_mode));
+    ESP_ERROR_CHECK(esp_zb_color_control_cluster_add_attr(esp_zb_color_cluster, ESP_ZB_ZCL_ATTR_COLOR_CONTROL_OPTIONS_ID, &zero_u8));
+    ESP_ERROR_CHECK(esp_zb_color_control_cluster_add_attr(esp_zb_color_cluster, ESP_ZB_ZCL_ATTR_COLOR_CONTROL_COLOR_TEMP_PHYSICAL_MIN_MIREDS_ID, &mireds_min));
+    ESP_ERROR_CHECK(esp_zb_color_control_cluster_add_attr(esp_zb_color_cluster, ESP_ZB_ZCL_ATTR_COLOR_CONTROL_COLOR_TEMP_PHYSICAL_MAX_MIREDS_ID, &mireds_max));
+    ESP_ERROR_CHECK(esp_zb_color_control_cluster_add_attr(esp_zb_color_cluster, ESP_ZB_ZCL_ATTR_COLOR_CONTROL_ENHANCED_COLOR_MODE_ID, &color_mode));
+
+    ESP_ERROR_CHECK(esp_zb_color_control_cluster_add_attr(esp_zb_color_cluster, ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_HUE_ID, &zero_u8));
+    ESP_ERROR_CHECK(esp_zb_color_control_cluster_add_attr(esp_zb_color_cluster, ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_SATURATION_ID, &max_sat));
+    ESP_ERROR_CHECK(esp_zb_color_control_cluster_add_attr(esp_zb_color_cluster, ESP_ZB_ZCL_ATTR_COLOR_CONTROL_ENHANCED_CURRENT_HUE_ID, &enhanced_hue));
+
+    esp_zb_cluster_list_t* cluster_list = esp_zb_zcl_cluster_list_create();
+    uint8_t app_version  = 1;
+    uint8_t stack_version = 2;
+    uint8_t hw_version   = 1;
+    static uint8_t date_code[] = { 8, '2','0','2','6','0','5','2','7' };
+    static uint8_t sw_build[]  = { 5, '1','.','0','.','0' };
+
+    esp_zb_attribute_list_t *basic_cluster = esp_zb_basic_cluster_create(&basic_cfg);
+
+    ESP_ERROR_CHECK(esp_zb_basic_cluster_add_attr(basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_APPLICATION_VERSION_ID,      &app_version));
+    ESP_ERROR_CHECK(esp_zb_basic_cluster_add_attr(basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_STACK_VERSION_ID,            &stack_version));
+    ESP_ERROR_CHECK(esp_zb_basic_cluster_add_attr(basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_HW_VERSION_ID,               &hw_version));
+    ESP_ERROR_CHECK(esp_zb_basic_cluster_add_attr(basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_DATE_CODE_ID,                 date_code));
+    ESP_ERROR_CHECK(esp_zb_basic_cluster_add_attr(basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_SW_BUILD_ID,                  sw_build));
+
+    ESP_ERROR_CHECK(esp_zb_cluster_list_add_basic_cluster( cluster_list, basic_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
+
+    ESP_ERROR_CHECK(esp_zb_cluster_list_add_identify_cluster(cluster_list, esp_zb_identify_cluster_create(&identity_cfg), ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
+    ESP_ERROR_CHECK(esp_zb_cluster_list_add_groups_cluster(cluster_list, esp_zb_groups_cluster_create(&groups_cfg), ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
+    ESP_ERROR_CHECK(esp_zb_cluster_list_add_scenes_cluster(cluster_list, esp_zb_scenes_cluster_create(&scenes_cfg), ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
+    ESP_ERROR_CHECK(esp_zb_cluster_list_add_on_off_cluster(cluster_list, esp_zb_on_off_cluster_create(&on_off_cfg), ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
+    ESP_ERROR_CHECK(esp_zb_cluster_list_add_level_cluster(cluster_list, esp_zb_level_cluster_create(&level_cfg), ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
+    ESP_ERROR_CHECK(esp_zb_cluster_list_add_color_control_cluster(cluster_list, esp_zb_color_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
+
+    // OUT-Cluster (Client-Seite - sendet Reports an Coordinator)
+    // Das ist was Z2M braucht um configureReporting zu schicken!
+    ESP_ERROR_CHECK(esp_zb_cluster_list_add_on_off_cluster(cluster_list, esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_ON_OFF), ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE));
+    ESP_ERROR_CHECK(esp_zb_cluster_list_add_level_cluster(cluster_list, esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_LEVEL_CONTROL), ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE));
+    ESP_ERROR_CHECK(esp_zb_cluster_list_add_color_control_cluster(cluster_list, esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL), ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE));
+
+    esp_zb_ep_list_t* ep_list = esp_zb_ep_list_create();
+
+    esp_zb_endpoint_config_t ep_config = {
+        .endpoint = HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1,
         .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID,
-        .app_device_id  = ESP_ZB_HA_COLOR_DIMMABLE_LIGHT_DEVICE_ID,
+        .app_device_id = ESP_ZB_HA_COLOR_DIMMABLE_LIGHT_DEVICE_ID,
         .app_device_version = 0,
     };
-    esp_zb_ep_list_add_ep(ep_list, cluster_list_2, ep2_cfg);
-    esp_zcl_utility_add_ep_basic_manufacturer_info(
-        ep_list, HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_2, &info);
 
-    // ── Endpunkt 3: Tunable White ────────────────────────────────────────
-    esp_zb_color_dimmable_light_cfg_t tw_cfg = ESP_ZB_DEFAULT_COLOR_DIMMABLE_LIGHT_CONFIG();
+    esp_zb_ep_list_add_ep(ep_list, cluster_list, ep_config);
 
-    // Color Temperature Mode erzwingen:
-    // color_mode = 2 → Color Temperature
-    // color_capabilities: Bit 4 = Color Temperature supported
-    tw_cfg.color_cfg.color_mode          = 0x02;   // ESP_ZB_ZCL_COLOR_CONTROL_COLOR_MODE_TEMPERATURE
-    tw_cfg.color_cfg.enhanced_color_mode = 0x02;
-    tw_cfg.color_cfg.color_capabilities  = 0x0010; // Bit 4: Color Temperature capability
+    // esp_zcl_utility_add_ep_basic_manufacturer_info( ep_list, HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1, &info);
+    ESP_ERROR_CHECK(esp_zb_basic_cluster_add_attr(basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID, vendor));
+    ESP_ERROR_CHECK(esp_zb_basic_cluster_add_attr(basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID, model_id));
 
-    esp_zb_cluster_list_t *cluster_list_3 = esp_zb_color_dimmable_light_clusters_create(&tw_cfg);
-
-    // colorTempPhysicalMin (0x400B) und colorTempPhysicalMax (0x400C) setzen
-    esp_zb_attribute_list_t *color_attrs = esp_zb_cluster_list_get_cluster(
-        cluster_list_3,
-        ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL,
-        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
-
-    uint16_t ct_min = 153;  // 6500K
-    uint16_t ct_max = 500;  // 2000K
-    esp_zb_color_control_cluster_add_attr(
-        color_attrs,
-        ESP_ZB_ZCL_ATTR_COLOR_CONTROL_COLOR_TEMP_PHYSICAL_MIN_MIREDS_ID, 
-        &ct_min);
-        
-    esp_zb_color_control_cluster_add_attr(
-        color_attrs,
-        ESP_ZB_ZCL_ATTR_COLOR_CONTROL_COLOR_TEMP_PHYSICAL_MAX_MIREDS_ID, 
-        &ct_max);
-
-    esp_zb_endpoint_config_t ep3_cfg = {
-        .endpoint           = HA_COLOR_TEMP_LIGHT_ENDPOINT,
-        .app_profile_id     = ESP_ZB_AF_HA_PROFILE_ID,
-        .app_device_id      = 0x010C,   // Color Temperature Light (Zigbee HA Spec)
-        .app_device_version = 0,
-    };
-    esp_zb_ep_list_add_ep(ep_list, cluster_list_3, ep3_cfg);
-        esp_zcl_utility_add_ep_basic_manufacturer_info(
-        ep_list, HA_COLOR_TEMP_LIGHT_ENDPOINT, &info);
-
-
-    // ── Alle Endpunkte registrieren ──────────────────────────────────────
     esp_zb_device_register(ep_list);
-
-    // Danach nur noch Werte setzen für bereits existierende Attribute:
-    uint8_t color_mode = 1; // XY
-    esp_zb_zcl_set_attribute_val(
-        HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1,
-        ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL,
-        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-        ESP_ZB_ZCL_ATTR_COLOR_CONTROL_COLOR_MODE_ID, 
-        &color_mode, 
-        false);
-
-    esp_zb_zcl_set_attribute_val(
-        HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1,
-        ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL,
-        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-        ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_X_ID,
-        &s_color_x, 
-        false
-    );
-
-    esp_zb_zcl_set_attribute_val(
-        HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1,
-        ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL,
-        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-        ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_Y_ID,
-        &s_color_y, 
-        false
-    );
-
-    uint16_t caps = 0x0008; // XY only
-    esp_zb_zcl_set_attribute_val(
-        HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1,
-        ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL,
-        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-        ESP_ZB_ZCL_ATTR_COLOR_CONTROL_COLOR_CAPABILITIES_ID,
-        &caps,
-        false
-    );
     
-/*
-    uint16_t ct_min = 153;  // 6500K
-    uint16_t ct_max = 500;  // 2000K
-
-    esp_zb_zcl_set_attribute_val(
-        HA_COLOR_TEMP_LIGHT_ENDPOINT,
-        ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL,
-        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-        ESP_ZB_ZCL_ATTR_COLOR_CONTROL_COLOR_TEMP_PHYSICAL_MIN_MIREDS_ID,
-        &ct_min,
-        false);
-
-    esp_zb_zcl_set_attribute_val(
-        HA_COLOR_TEMP_LIGHT_ENDPOINT,
-        ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL,
-        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-        ESP_ZB_ZCL_ATTR_COLOR_CONTROL_COLOR_TEMP_PHYSICAL_MAX_MIREDS_ID,
-        &ct_max,
-        false);
-*/
-    esp_zb_zcl_reporting_info_t report_x = {
-        .direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_CLI,
-        .ep = HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1,
-        .cluster_id = ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL,
-        .cluster_role = ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-        .attr_id = ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_X_ID,
-        .flags = 0,
-        .u.send_info.min_interval = 1,
-        .u.send_info.max_interval = 0,
-        .u.send_info.delta.u16 = 1,
-        .u.send_info.def_min_interval = 1,
-        .u.send_info.def_max_interval = 0,
-        .dst.profile_id = ESP_ZB_AF_HA_PROFILE_ID,
-        .manuf_code = ESP_ZB_ZCL_ATTR_NON_MANUFACTURER_SPECIFIC,
-    };
-    esp_zb_zcl_update_reporting_info(&report_x);
-
-    esp_zb_zcl_reporting_info_t report_y = report_x;
-    report_y.attr_id = ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_Y_ID;
-    esp_zb_zcl_update_reporting_info(&report_y);
-        
     esp_zb_set_primary_network_channel_set(ESP_ZB_PRIMARY_CHANNEL_MASK);
     esp_zb_raw_command_handler_register(zb_raw_command_handler);
-
     esp_zb_core_action_handler_register(zb_action_handler);
-
     ESP_ERROR_CHECK(esp_zb_start(false));
     esp_zb_stack_main_loop();
 }
