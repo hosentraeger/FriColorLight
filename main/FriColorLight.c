@@ -27,10 +27,7 @@
 #include "zcl/esp_zigbee_zcl_level.h"
 #include "zcl/esp_zigbee_zcl_color_control.h"
 #include "zboss_api_buf.h"
-
-static uint16_t s_color_x = ESP_ZB_ZCL_COLOR_CONTROL_CURRENT_X_DEF_VALUE;
-static uint16_t s_color_y = ESP_ZB_ZCL_COLOR_CONTROL_CURRENT_Y_DEF_VALUE;
-
+#include "esp_zigbee_ota.h"
 
 #if !defined CONFIG_ZB_ZCZR
 #error Define ZB_ZCZR in idf.py menuconfig to compile light (Router) source code.
@@ -48,11 +45,42 @@ enum {
 
 static uint8_t model_id[] = { 16, 'r','g','b','w','w','-','c','o','l','o','r','l','i','g','h','t' };
 static uint8_t vendor[]   = { 14, 'r','e','d','f','i','v','e','d','e','s','i','g','n','s' };
+uint8_t app_version  = 1;
+uint8_t stack_version = 2;
+uint8_t hw_version   = 1;
+static uint8_t date_code[] = { 8, '2','0','2','6','0','5','2','7' };
+static uint8_t sw_build[]  = { 5, '1','.','0','.','0' };
 
 static const char *TAG = "ESP_ZB_COLOR_DIMM_LIGHT";
 
+// OTA Client Konfiguration
+esp_zb_ota_cluster_cfg_t ota_cfg = {
+    .ota_upgrade_file_version           = 0x01000002,  // deine aktuelle Firmware-Version
+    .ota_upgrade_downloaded_file_ver    = 0x01000002,
+    .ota_upgrade_manufacturer           = 0x8042,      // deine Manufacturer-ID (frei wählbar)
+    .ota_upgrade_image_type             = 0x0000,
+};
+
+esp_zb_endpoint_config_t ep_config = {
+    .endpoint = HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1,
+    .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID,
+    .app_device_id = ESP_ZB_HA_COLOR_DIMMABLE_LIGHT_DEVICE_ID,
+    .app_device_version = 0,
+};
+
 static uint8_t s_current_hue = 0;
 static uint8_t s_current_sat = 254;
+static uint16_t s_color_x = ESP_ZB_ZCL_COLOR_CONTROL_CURRENT_X_DEF_VALUE;
+static uint16_t s_color_y = ESP_ZB_ZCL_COLOR_CONTROL_CURRENT_Y_DEF_VALUE;
+uint16_t zero = 0;
+uint8_t  zero_u8 = 0;   // Wichtig für Options (8-Bit)
+uint8_t  max_sat = 254; // Standardmäßig voll gesättigt
+uint16_t mireds = 500;
+uint16_t mireds_max = 500;
+uint16_t mireds_min = 153;
+uint8_t color_mode = 2;
+uint16_t enhanced_hue = 0;
+
 
 static bool zb_raw_command_handler(uint8_t bufid)
 {
@@ -77,6 +105,51 @@ static bool zb_raw_command_handler(uint8_t bufid)
 
 static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id, const void *message)
 {
+    // ── OTA ───────────────────────────────────────────────────────────────
+    if (callback_id == ESP_ZB_CORE_OTA_UPGRADE_VALUE_CB_ID) {
+        esp_zb_zcl_ota_upgrade_value_message_t *ota_msg =
+            (esp_zb_zcl_ota_upgrade_value_message_t *)message;
+
+        switch (ota_msg->upgrade_status) {
+            case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_START:
+                ESP_LOGI(TAG, "OTA Start");
+                break;
+            case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_RECEIVE:
+                ESP_LOGI(TAG, "OTA Daten empfangen: %d bytes", ota_msg->payload_size);
+                break;
+            case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_FINISH:
+                ESP_LOGI(TAG, "OTA fertig – Neustart");
+                esp_restart();
+                break;
+            case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_ABORT:
+                ESP_LOGW(TAG, "OTA abgebrochen");
+                break;
+            case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_APPLY:
+                ESP_LOGI(TAG, "OTA Apply");
+                break;
+            case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_CHECK:
+                ESP_LOGI(TAG, "OTA Check");
+                break;
+            case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_OK:
+                ESP_LOGI(TAG, "OTA OK");
+                break;
+            case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_ERROR:
+                ESP_LOGW(TAG, "OTA Fehler");
+                break;
+            case ESP_ZB_ZCL_OTA_UPGRADE_IMAGE_STATUS_NORMAL:
+                ESP_LOGI(TAG, "OTA Image normal");
+                break;
+            case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_BUSY:
+                ESP_LOGI(TAG, "OTA busy");
+                break;
+            case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_SERVER_NOT_FOUND:
+                ESP_LOGW(TAG, "OTA Server nicht gefunden");
+                break;
+        }
+        return ESP_OK;
+    }
+
+    // ── Attribut-Änderungen ───────────────────────────────────────────────
     if (callback_id != ESP_ZB_CORE_SET_ATTR_VALUE_CB_ID) {
         ESP_LOGD(TAG, "unhandled CB 0x%04x", callback_id);
         return ESP_OK;
@@ -110,13 +183,13 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
                 ESP_LOGI(TAG, "LEVEL → %d", level);
                 pwm_rgb_driver_set_level(level);
                 pwm_driver_apply();
-                }
+            }
             break;
         }
 
         // ── COLOR CONTROL ─────────────────────────────────────────────────
         case ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL: {
-            
+
             switch (attr) {
 
                 case ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_HUE_ID: {
@@ -137,7 +210,6 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
 
                 case ESP_ZB_ZCL_ATTR_COLOR_CONTROL_ENHANCED_CURRENT_HUE_ID: {
                     uint16_t enh_hue = *(uint16_t *)msg->attribute.data.value;
-                    // 16-bit → 8-bit: 65535 entspricht 254
                     s_current_hue = (uint8_t)((uint32_t)enh_hue * 254 / 65535);
                     ESP_LOGI(TAG, "ENHANCED_HUE → %d (raw %d)", s_current_hue, enh_hue);
                     pwm_rgb_driver_set_color_hue_sat(s_current_hue, s_current_sat);
@@ -151,13 +223,12 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
 
                 case ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_Y_ID: {
                     uint16_t y = *(uint16_t *)msg->attribute.data.value;
-                    
-                    // 0/0 ist kein gültiger Farbwert – ignorieren
+
                     if (s_color_x == 0 && y == 0) {
                         ESP_LOGD(TAG, "XY 0/0 ignoriert");
                         break;
                     }
-                    
+
                     s_color_y = y;
                     pwm_rgb_driver_set_color_xy(s_color_x, s_color_y);
                     pwm_driver_apply();
@@ -208,66 +279,67 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
     esp_zb_app_signal_type_t sig_type = *p_sg_p;
     switch (sig_type) 
     {
-    case ESP_ZB_ZDO_SIGNAL_SKIP_STARTUP:
-        ESP_LOGI(TAG, "Initialize Zigbee stack");
-        esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_INITIALIZATION);
-        break;
-    case ESP_ZB_BDB_SIGNAL_DEVICE_FIRST_START:
-    case ESP_ZB_BDB_SIGNAL_DEVICE_REBOOT:
-        if (err_status == ESP_OK) 
-        {
-            ESP_LOGI(TAG, "Deferred driver initialization %s", deferred_driver_init() ? "failed" : "successful");
-            ESP_LOGI(TAG, "Device started up in%s factory-reset mode", esp_zb_bdb_is_factory_new() ? "" : " non");
-            if (esp_zb_bdb_is_factory_new()) 
+        case ESP_ZB_ZDO_SIGNAL_SKIP_STARTUP:
+            ESP_LOGI(TAG, "Initialize Zigbee stack");
+            esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_INITIALIZATION);
+            break;
+        case ESP_ZB_BDB_SIGNAL_DEVICE_FIRST_START:
+        case ESP_ZB_BDB_SIGNAL_DEVICE_REBOOT:
+            if (err_status == ESP_OK) 
             {
-                ESP_LOGI(TAG, "Start network steering");
-                esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_NETWORK_STEERING);
+                ESP_LOGI(TAG, "Deferred driver initialization %s", deferred_driver_init() ? "failed" : "successful");
+                ESP_LOGI(TAG, "Device started up in%s factory-reset mode", esp_zb_bdb_is_factory_new() ? "" : " non");
+                if (esp_zb_bdb_is_factory_new()) 
+                {
+                    ESP_LOGI(TAG, "Start network steering");
+                    esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_NETWORK_STEERING);
+                }
+                else 
+                {
+                    ESP_LOGI(TAG, "Device rebooted");
+                }
+            } else 
+            {
+                ESP_LOGW(TAG, "%s failed with status: %s, retrying", esp_zb_zdo_signal_to_string(sig_type),
+                        esp_err_to_name(err_status));
+                esp_zb_scheduler_alarm((esp_zb_callback_t)bdb_start_top_level_commissioning_cb,
+                                    ESP_ZB_BDB_MODE_INITIALIZATION, 1000);
+            }
+            break;
+        case ESP_ZB_BDB_SIGNAL_STEERING:
+            if (err_status == ESP_OK) 
+            {
+                esp_zb_ieee_addr_t extended_pan_id;
+                esp_zb_get_extended_pan_id(extended_pan_id);
+                ESP_LOGI(TAG, "Joined network successfully (Extended PAN ID: %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x, PAN ID: 0x%04hx, Channel:%d, Short Address: 0x%04hx)",
+                        extended_pan_id[7], extended_pan_id[6], extended_pan_id[5], extended_pan_id[4],
+                        extended_pan_id[3], extended_pan_id[2], extended_pan_id[1], extended_pan_id[0],
+                        esp_zb_get_pan_id(), esp_zb_get_current_channel(), esp_zb_get_short_address());
+                esp_zb_ota_upgrade_client_query_image_req(0x0000, HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1);
             }
             else 
             {
-                ESP_LOGI(TAG, "Device rebooted");
+                ESP_LOGI(TAG, "Network steering was not successful (status: %s)", esp_err_to_name(err_status));
+                esp_zb_scheduler_alarm((esp_zb_callback_t)bdb_start_top_level_commissioning_cb, ESP_ZB_BDB_MODE_NETWORK_STEERING, 1000);
             }
-        } else 
-        {
-            ESP_LOGW(TAG, "%s failed with status: %s, retrying", esp_zb_zdo_signal_to_string(sig_type),
-                     esp_err_to_name(err_status));
-            esp_zb_scheduler_alarm((esp_zb_callback_t)bdb_start_top_level_commissioning_cb,
-                                   ESP_ZB_BDB_MODE_INITIALIZATION, 1000);
-        }
-        break;
-    case ESP_ZB_BDB_SIGNAL_STEERING:
-        if (err_status == ESP_OK) 
-        {
-            esp_zb_ieee_addr_t extended_pan_id;
-            esp_zb_get_extended_pan_id(extended_pan_id);
-            ESP_LOGI(TAG, "Joined network successfully (Extended PAN ID: %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x, PAN ID: 0x%04hx, Channel:%d, Short Address: 0x%04hx)",
-                     extended_pan_id[7], extended_pan_id[6], extended_pan_id[5], extended_pan_id[4],
-                     extended_pan_id[3], extended_pan_id[2], extended_pan_id[1], extended_pan_id[0],
-                     esp_zb_get_pan_id(), esp_zb_get_current_channel(), esp_zb_get_short_address());
-        }
-        else 
-        {
-            ESP_LOGI(TAG, "Network steering was not successful (status: %s)", esp_err_to_name(err_status));
-            esp_zb_scheduler_alarm((esp_zb_callback_t)bdb_start_top_level_commissioning_cb, ESP_ZB_BDB_MODE_NETWORK_STEERING, 1000);
-        }
-        break;
-    case ESP_ZB_NWK_SIGNAL_PERMIT_JOIN_STATUS:
-        if (err_status == ESP_OK) 
-        {
-            if (*(uint8_t *)esp_zb_app_signal_get_params(p_sg_p)) 
+            break;
+        case ESP_ZB_NWK_SIGNAL_PERMIT_JOIN_STATUS:
+            if (err_status == ESP_OK) 
             {
-                ESP_LOGI(TAG, "Network(0x%04hx) is open for %d seconds", esp_zb_get_pan_id(), *(uint8_t *)esp_zb_app_signal_get_params(p_sg_p));
+                if (*(uint8_t *)esp_zb_app_signal_get_params(p_sg_p)) 
+                {
+                    ESP_LOGI(TAG, "Network(0x%04hx) is open for %d seconds", esp_zb_get_pan_id(), *(uint8_t *)esp_zb_app_signal_get_params(p_sg_p));
+                }
+                else 
+                {
+                    ESP_LOGW(TAG, "Network(0x%04hx) closed, devices joining not allowed.", esp_zb_get_pan_id());
+                }
             }
-            else 
-            {
-                ESP_LOGW(TAG, "Network(0x%04hx) closed, devices joining not allowed.", esp_zb_get_pan_id());
-            }
-        }
-        break;
-    case ESP_ZB_BDB_SIGNAL_FINDING_AND_BINDING_TARGET_FINISHED:
-    default:
-        ESP_LOGI(TAG, "ZDO signal: %s (0x%x), status: %s", esp_zb_zdo_signal_to_string(sig_type), sig_type, esp_err_to_name(err_status));
-        break;
+            break;
+        case ESP_ZB_BDB_SIGNAL_FINDING_AND_BINDING_TARGET_FINISHED:
+        default:
+            ESP_LOGI(TAG, "ZDO signal: %s (0x%x), status: %s", esp_zb_zdo_signal_to_string(sig_type), sig_type, esp_err_to_name(err_status));
+            break;
     }
 }
 
@@ -301,17 +373,9 @@ static void esp_zb_task(void *pvParameters)
             0, 0, 0, false, 0
     };
 
-    uint16_t color_capabilities = COLOR_CAPABILITY_SUPPORT_XY | COLOR_CAPABILITY_SUPPORT_HUE_SATURATION | COLOR_CAPABILITY_SUPPORT_ENHANCED_HUE_SATURATION;
-
-     // IN-Cluster (Server-Seite - empfängt Befehle von Coordinator)
-    uint16_t zero = 0;
-    uint8_t  zero_u8 = 0;   // Wichtig für Options (8-Bit)
-    uint8_t  max_sat = 254; // Standardmäßig voll gesättigt
-    uint16_t mireds = 500;
-    uint16_t mireds_max = 500;
-    uint16_t mireds_min = 153;
-    uint8_t color_mode = 2;
-    uint16_t enhanced_hue = 0;
+    uint16_t color_capabilities = COLOR_CAPABILITY_SUPPORT_XY 
+                                 | COLOR_CAPABILITY_SUPPORT_HUE_SATURATION 
+                                 | COLOR_CAPABILITY_SUPPORT_ENHANCED_HUE_SATURATION;
 
     esp_zb_attribute_list_t* esp_zb_color_cluster = esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL);
     ESP_ERROR_CHECK(esp_zb_color_control_cluster_add_attr(esp_zb_color_cluster, ESP_ZB_ZCL_ATTR_COLOR_CONTROL_COLOR_CAPABILITIES_ID, &color_capabilities));
@@ -323,28 +387,22 @@ static void esp_zb_task(void *pvParameters)
     ESP_ERROR_CHECK(esp_zb_color_control_cluster_add_attr(esp_zb_color_cluster, ESP_ZB_ZCL_ATTR_COLOR_CONTROL_COLOR_TEMP_PHYSICAL_MIN_MIREDS_ID, &mireds_min));
     ESP_ERROR_CHECK(esp_zb_color_control_cluster_add_attr(esp_zb_color_cluster, ESP_ZB_ZCL_ATTR_COLOR_CONTROL_COLOR_TEMP_PHYSICAL_MAX_MIREDS_ID, &mireds_max));
     ESP_ERROR_CHECK(esp_zb_color_control_cluster_add_attr(esp_zb_color_cluster, ESP_ZB_ZCL_ATTR_COLOR_CONTROL_ENHANCED_COLOR_MODE_ID, &color_mode));
-
     ESP_ERROR_CHECK(esp_zb_color_control_cluster_add_attr(esp_zb_color_cluster, ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_HUE_ID, &zero_u8));
     ESP_ERROR_CHECK(esp_zb_color_control_cluster_add_attr(esp_zb_color_cluster, ESP_ZB_ZCL_ATTR_COLOR_CONTROL_CURRENT_SATURATION_ID, &max_sat));
     ESP_ERROR_CHECK(esp_zb_color_control_cluster_add_attr(esp_zb_color_cluster, ESP_ZB_ZCL_ATTR_COLOR_CONTROL_ENHANCED_CURRENT_HUE_ID, &enhanced_hue));
 
     esp_zb_cluster_list_t* cluster_list = esp_zb_zcl_cluster_list_create();
-    uint8_t app_version  = 1;
-    uint8_t stack_version = 2;
-    uint8_t hw_version   = 1;
-    static uint8_t date_code[] = { 8, '2','0','2','6','0','5','2','7' };
-    static uint8_t sw_build[]  = { 5, '1','.','0','.','0' };
 
     esp_zb_attribute_list_t *basic_cluster = esp_zb_basic_cluster_create(&basic_cfg);
+    ESP_ERROR_CHECK(esp_zb_basic_cluster_add_attr(basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_APPLICATION_VERSION_ID, &app_version));
+    ESP_ERROR_CHECK(esp_zb_basic_cluster_add_attr(basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_STACK_VERSION_ID,       &stack_version));
+    ESP_ERROR_CHECK(esp_zb_basic_cluster_add_attr(basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_HW_VERSION_ID,          &hw_version));
+    ESP_ERROR_CHECK(esp_zb_basic_cluster_add_attr(basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_DATE_CODE_ID,            date_code));
+    ESP_ERROR_CHECK(esp_zb_basic_cluster_add_attr(basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_SW_BUILD_ID,             sw_build));
+    ESP_ERROR_CHECK(esp_zb_basic_cluster_add_attr(basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID,    vendor));
+    ESP_ERROR_CHECK(esp_zb_basic_cluster_add_attr(basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID,     model_id));
 
-    ESP_ERROR_CHECK(esp_zb_basic_cluster_add_attr(basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_APPLICATION_VERSION_ID,      &app_version));
-    ESP_ERROR_CHECK(esp_zb_basic_cluster_add_attr(basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_STACK_VERSION_ID,            &stack_version));
-    ESP_ERROR_CHECK(esp_zb_basic_cluster_add_attr(basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_HW_VERSION_ID,               &hw_version));
-    ESP_ERROR_CHECK(esp_zb_basic_cluster_add_attr(basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_DATE_CODE_ID,                 date_code));
-    ESP_ERROR_CHECK(esp_zb_basic_cluster_add_attr(basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_SW_BUILD_ID,                  sw_build));
-
-    ESP_ERROR_CHECK(esp_zb_cluster_list_add_basic_cluster( cluster_list, basic_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
-
+    ESP_ERROR_CHECK(esp_zb_cluster_list_add_basic_cluster(cluster_list, basic_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_identify_cluster(cluster_list, esp_zb_identify_cluster_create(&identity_cfg), ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_groups_cluster(cluster_list, esp_zb_groups_cluster_create(&groups_cfg), ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_scenes_cluster(cluster_list, esp_zb_scenes_cluster_create(&scenes_cfg), ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
@@ -352,29 +410,19 @@ static void esp_zb_task(void *pvParameters)
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_level_cluster(cluster_list, esp_zb_level_cluster_create(&level_cfg), ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_color_control_cluster(cluster_list, esp_zb_color_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
 
-    // OUT-Cluster (Client-Seite - sendet Reports an Coordinator)
-    // Das ist was Z2M braucht um configureReporting zu schicken!
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_on_off_cluster(cluster_list, esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_ON_OFF), ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE));
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_level_cluster(cluster_list, esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_LEVEL_CONTROL), ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE));
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_color_control_cluster(cluster_list, esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL), ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE));
 
+    // OTA Client
+    esp_zb_attribute_list_t *ota_cluster = esp_zb_ota_cluster_create(&ota_cfg);
+    ESP_ERROR_CHECK(esp_zb_cluster_list_add_ota_cluster(cluster_list, ota_cluster, ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE));
+
     esp_zb_ep_list_t* ep_list = esp_zb_ep_list_create();
-
-    esp_zb_endpoint_config_t ep_config = {
-        .endpoint = HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1,
-        .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID,
-        .app_device_id = ESP_ZB_HA_COLOR_DIMMABLE_LIGHT_DEVICE_ID,
-        .app_device_version = 0,
-    };
-
     esp_zb_ep_list_add_ep(ep_list, cluster_list, ep_config);
 
-    // esp_zcl_utility_add_ep_basic_manufacturer_info( ep_list, HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1, &info);
-    ESP_ERROR_CHECK(esp_zb_basic_cluster_add_attr(basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID, vendor));
-    ESP_ERROR_CHECK(esp_zb_basic_cluster_add_attr(basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID, model_id));
-
     esp_zb_device_register(ep_list);
-    
+
     esp_zb_set_primary_network_channel_set(ESP_ZB_PRIMARY_CHANNEL_MASK);
     esp_zb_raw_command_handler_register(zb_raw_command_handler);
     esp_zb_core_action_handler_register(zb_action_handler);
