@@ -45,6 +45,7 @@ const colorlight = {
     description: 'ESP Zigbee RGBWW light (Debug Version)',
     extend: [m.light({"color":true}), m.commandsOnOff(), m.commandsLevelCtrl(), m.commandsColorCtrl()],
     meta: {},
+    ota: true,
 };
 
 export default [wallswitch, colorlight];
