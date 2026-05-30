@@ -152,8 +152,8 @@ esp_err_t zb_register_ota_upgrade_client_device(esp_zb_cluster_list_t *cluster_l
      *  no further processing shall continue.
      */
     esp_zb_ota_cluster_cfg_t ota_cluster_cfg = {
-        .ota_upgrade_file_version = 4098,
-        .ota_upgrade_downloaded_file_ver = 4098,
+        .ota_upgrade_file_version = build_firmware_version(),
+        .ota_upgrade_downloaded_file_ver = build_firmware_version(),
         .ota_upgrade_manufacturer = DEVICE_MANUFACTURER_ID,
         .ota_upgrade_image_type = DEVICE_MODEL_ID,
     };

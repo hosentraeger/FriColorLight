@@ -35,6 +35,9 @@
 #error Define ZB_ZCZR in idf.py menuconfig to compile light (Router) source code.
 #endif
 
+#define CONFIG_FRILIGHT_DEBUG_RAW_CMDS false
+#define CLAMP(x, lo, hi) ((x) < (lo) ? (lo) : ((x) > (hi) ? (hi) : (x)))
+
 enum {
     COLOR_CAPABILITY_SUPPORT_HUE_SATURATION = 1 << 0,
     COLOR_CAPABILITY_SUPPORT_ENHANCED_HUE_SATURATION = 1 << 1,
@@ -43,38 +46,20 @@ enum {
     COLOR_CAPABILITY_SUPPORT_COLOR_TEMPERATURE = 1 << 4,
 } COLOR_CAPABILITIES;
 
-#define CLAMP(x, lo, hi) ((x) < (lo) ? (lo) : ((x) > (hi) ? (hi) : (x)))
 
 static uint8_t model_id[MAX_ZIGBEE_STRING_LENGTH] = {0};
 static uint8_t vendor[MAX_ZIGBEE_STRING_LENGTH]   = {0};
 static uint8_t date_code[MAX_ZIGBEE_STRING_LENGTH] = {0};
 static uint8_t sw_build[MAX_ZIGBEE_STRING_LENGTH]  = {0};
-uint8_t app_version  = 0;
-uint8_t stack_version = DEVICE_STACK_VERSION;
-uint8_t hw_version   = DEVICE_HW_VERSION;
-
 static const char *TAG = "ESP_ZB_COLOR_DIMM_LIGHT";
-
-esp_zb_endpoint_config_t ep_config = {
-    .endpoint = HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1,
-    .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID,
-    .app_device_id = ESP_ZB_HA_COLOR_DIMMABLE_LIGHT_DEVICE_ID,
-    .app_device_version = 0,
-};
 
 static uint8_t s_current_hue = 0;
 static uint8_t s_current_sat = 254;
 static uint16_t s_color_x = ESP_ZB_ZCL_COLOR_CONTROL_CURRENT_X_DEF_VALUE;
 static uint16_t s_color_y = ESP_ZB_ZCL_COLOR_CONTROL_CURRENT_Y_DEF_VALUE;
-uint16_t zero = 0;
-uint8_t  zero_u8 = 0;   // Wichtig für Options (8-Bit)
-uint8_t  max_sat = 254; // Standardmäßig voll gesättigt
-uint16_t mireds = 500;
-uint16_t mireds_max = 500;
-uint16_t mireds_min = 153;
-uint8_t color_mode = 2;
-uint16_t enhanced_hue = 0;
-
+static uint8_t color_mode = 2;
+static uint16_t enhanced_hue = 0;
+static uint16_t mireds = 500;
 
 static bool zb_raw_command_handler(uint8_t bufid)
 {
@@ -199,7 +184,7 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
 
                 case ESP_ZB_ZCL_ATTR_COLOR_CONTROL_COLOR_TEMPERATURE_ID: {
                     uint16_t mireds = *(uint16_t *)msg->attribute.data.value;
-                    ESP_LOGI(TAG, "COLOR_TEMP → %d mireds (RGB-Leuchte, ignoriert)", mireds);
+                    ESP_LOGD(TAG, "COLOR_TEMP → %d mireds (RGB-Leuchte, ignoriert)", mireds);
                     break;
                 }
 
@@ -306,7 +291,15 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
 
 static void esp_zb_task(void *pvParameters)
 {
-    app_version = DEVICE_APP_VERSION;
+    uint8_t app_version = DEVICE_APP_VERSION;
+    uint8_t stack_version = DEVICE_STACK_VERSION;
+    uint8_t hw_version   = DEVICE_HW_VERSION;
+    uint16_t zero = 0;
+    uint8_t  zero_u8 = 0;   // Wichtig für Options (8-Bit)
+    uint8_t  max_sat = 254; // Standardmäßig voll gesättigt
+    uint16_t mireds_max = 500;
+    uint16_t mireds_min = 153;
+
     build_date_code (date_code, MAX_ZIGBEE_STRING_LENGTH);
     build_sw_build (sw_build, MAX_ZIGBEE_STRING_LENGTH);
     build_model_id (model_id, MAX_ZIGBEE_STRING_LENGTH);
@@ -315,6 +308,13 @@ static void esp_zb_task(void *pvParameters)
 
     esp_zb_cfg_t zb_nwk_cfg = ESP_ZB_ZR_CONFIG();
     esp_zb_init(&zb_nwk_cfg);
+
+    esp_zb_endpoint_config_t ep_config = {
+        .endpoint = HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1,
+        .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID,
+        .app_device_id = ESP_ZB_HA_COLOR_DIMMABLE_LIGHT_DEVICE_ID,
+        .app_device_version = 0,
+    };
 
     esp_zb_on_off_cluster_cfg_t on_off_cfg = {
             .on_off = ESP_ZB_ZCL_ON_OFF_ON_OFF_DEFAULT_VALUE
@@ -382,15 +382,18 @@ static void esp_zb_task(void *pvParameters)
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_level_cluster(cluster_list, esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_LEVEL_CONTROL), ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE));
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_color_control_cluster(cluster_list, esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL), ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE));
 
+    ESP_ERROR_CHECK(zb_register_ota_upgrade_client_device(cluster_list));
+
     esp_zb_ep_list_t* ep_list = esp_zb_ep_list_create();
     esp_zb_ep_list_add_ep(ep_list, cluster_list, ep_config);
-
-    ESP_ERROR_CHECK(zb_register_ota_upgrade_client_device(cluster_list));
 
     esp_zb_device_register(ep_list);
 
     esp_zb_set_primary_network_channel_set(ESP_ZB_PRIMARY_CHANNEL_MASK);
+
+#if CONFIG_FRILIGHT_DEBUG_RAW_CMDS
     esp_zb_raw_command_handler_register(zb_raw_command_handler);
+#endif
     esp_zb_core_action_handler_register(zb_action_handler);
 
 

@@ -1,7 +1,36 @@
 #include "FriConfig.h"
 #include <stdint.h>
-#include <time.h>
 #include <stdio.h>
+
+static inline const char *build_date_yyyymmdd(void)
+{
+    static char buf[9]; // "20260530\0"
+
+    // __DATE__ = "May 30 2026"
+    //             0123456789A
+    const char *d = __DATE__;
+
+    // Jahr
+    buf[0] = d[7]; buf[1] = d[8]; buf[2] = d[9]; buf[3] = d[10];
+
+    // Monat
+    const char months[] = "JanFebMarAprMayJunJulAugSepOctNovDec";
+    int m = 0;
+    for (; m < 12; m++) {
+        if (d[0] == months[m*3] &&
+            d[1] == months[m*3+1] &&
+            d[2] == months[m*3+2]) break;
+    }
+    buf[4] = '0' + (m + 1) / 10;
+    buf[5] = '0' + (m + 1) % 10;
+
+    // Tag (Leerzeichen bei z.B. " 3" → "03")
+    buf[6] = (d[4] == ' ') ? '0' : d[4];
+    buf[7] = d[5];
+    buf[8] = '\0';
+
+    return buf;
+}
 
 uint32_t build_firmware_version ( )
 {

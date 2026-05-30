@@ -23,9 +23,10 @@
 #define MAX_ZIGBEE_STRING_LENGTH 32
 #define DEVICE_MAJOR_VERSION      1
 #define DEVICE_MINOR_VERSION      0
-#define DEVICE_PATCH_VERSION      3
-#define DEVICE_APP_VERSION        3
-#define DEVICE_DATE               "20260530"
+#define DEVICE_PATCH_VERSION      4
+#define DEVICE_APP_VERSION        4
+// Automatisches Build-Datum – kein manuelles Pflegen mehr nötig
+#define DEVICE_DATE  build_date_yyyymmdd()
 
 #define DEVICE_VENDOR "redfivedesigns"
 #define DEVICE_MANUFACTURER_ID 0xDDBB
