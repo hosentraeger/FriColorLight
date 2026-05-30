@@ -23,15 +23,6 @@
 #define PWM_WARMWHITE_PIN 22
 #define NEOPIXEL_PIN 1
 
-/* Zigbee configuration */
-#define MAX_CHILDREN                      10                                    /* the max amount of connected devices */
-#define INSTALLCODE_POLICY_ENABLE         false                                 /* enable the install code policy for security */
-// Endpoint-Nummern definieren
-#define HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1  1   // Erster RGB Endpunkt (bereits vorhanden)
-#define HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_2  2   // Zweiter RGB Endpunkt
-#define HA_COLOR_TEMP_LIGHT_ENDPOINT        3   // Tunable White Endpunkt
-#define ESP_ZB_PRIMARY_CHANNEL_MASK       ESP_ZB_TRANSCEIVER_ALL_CHANNELS_MASK  /* Zigbee primary channel mask use in the example */
-
 /* Basic manufacturer information */
 //#define ESP_MANUFACTURER_NAME "\x09""ESPRESSIF"      /* Customized manufacturer name */
 //#define ESP_MODEL_IDENTIFIER "\x07"CONFIG_IDF_TARGET /* Customized model identifier */

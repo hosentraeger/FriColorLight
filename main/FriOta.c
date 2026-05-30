@@ -5,6 +5,7 @@
 #include "FriOta.h"
 #include "esp_check.h"
 #include "esp_timer.h"
+#include "FriConfig.h"
 
 static const char *TAG = "FRI_OTA_CLIENT";
 
@@ -151,15 +152,15 @@ esp_err_t zb_register_ota_upgrade_client_device(esp_zb_cluster_list_t *cluster_l
      *  no further processing shall continue.
      */
     esp_zb_ota_cluster_cfg_t ota_cluster_cfg = {
-        .ota_upgrade_file_version = OTA_UPGRADE_RUNNING_FILE_VERSION,
-        .ota_upgrade_downloaded_file_ver = OTA_UPGRADE_DOWNLOADED_FILE_VERSION,
-        .ota_upgrade_manufacturer = OTA_UPGRADE_MANUFACTURER,
-        .ota_upgrade_image_type = OTA_UPGRADE_IMAGE_TYPE,
+        .ota_upgrade_file_version = 4098,
+        .ota_upgrade_downloaded_file_ver = 4098,
+        .ota_upgrade_manufacturer = DEVICE_MANUFACTURER_ID,
+        .ota_upgrade_image_type = DEVICE_MODEL_ID,
     };
     esp_zb_attribute_list_t *ota_cluster = esp_zb_ota_cluster_create(&ota_cluster_cfg);
     esp_zb_zcl_ota_upgrade_client_variable_t variable_config = {
         .timer_query = ESP_ZB_ZCL_OTA_UPGRADE_QUERY_TIMER_COUNT_DEF,
-        .hw_version = OTA_UPGRADE_HW_VERSION,
+        .hw_version = DEVICE_HW_VERSION,
         .max_data_size = OTA_UPGRADE_MAX_DATA_SIZE,
     };
     uint16_t ota_upgrade_server_addr = 0xffff;

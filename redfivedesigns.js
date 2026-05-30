@@ -36,15 +36,15 @@ const wallswitch = {
 };
 
 /* ========= LAMPE ========= */
-import * as m from 'zigbee-herdsman-converters/lib/modernExtend';
-
 const colorlight = {
     zigbeeModel: ['rgbww-colorlight'],
     model: 'RGBWW Color Light',
     vendor: 'redfivedesigns',
     description: 'ESP Zigbee RGBWW light (Debug Version)',
     extend: [m.light({"color":true}), m.commandsOnOff(), m.commandsLevelCtrl(), m.commandsColorCtrl()],
-    meta: {},
+    meta: {
+        otaMaximumDataSize: 220
+    },
     ota: true,
 };
 

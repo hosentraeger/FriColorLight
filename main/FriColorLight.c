@@ -28,6 +28,7 @@
 #include "zcl/esp_zigbee_zcl_color_control.h"
 #include "zboss_api_buf.h"
 
+#include "FriConfig.h"
 #include "FriOta.h"
 
 #if !defined CONFIG_ZB_ZCZR
@@ -44,13 +45,13 @@ enum {
 
 #define CLAMP(x, lo, hi) ((x) < (lo) ? (lo) : ((x) > (hi) ? (hi) : (x)))
 
-static uint8_t model_id[] = { 16, 'r','g','b','w','w','-','c','o','l','o','r','l','i','g','h','t' };
-static uint8_t vendor[]   = { 14, 'r','e','d','f','i','v','e','d','e','s','i','g','n','s' };
-uint8_t app_version  = 1;
-uint8_t stack_version = 2;
-uint8_t hw_version   = 1;
-static uint8_t date_code[] = { 8, '2','0','2','6','0','5','2','7' };
-static uint8_t sw_build[]  = { 5, '1','.','0','.','0' };
+static uint8_t model_id[MAX_ZIGBEE_STRING_LENGTH] = {0};
+static uint8_t vendor[MAX_ZIGBEE_STRING_LENGTH]   = {0};
+static uint8_t date_code[MAX_ZIGBEE_STRING_LENGTH] = {0};
+static uint8_t sw_build[MAX_ZIGBEE_STRING_LENGTH]  = {0};
+uint8_t app_version  = 0;
+uint8_t stack_version = DEVICE_STACK_VERSION;
+uint8_t hw_version   = DEVICE_HW_VERSION;
 
 static const char *TAG = "ESP_ZB_COLOR_DIMM_LIGHT";
 
@@ -305,6 +306,13 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
 
 static void esp_zb_task(void *pvParameters)
 {
+    app_version = DEVICE_APP_VERSION;
+    build_date_code (date_code, MAX_ZIGBEE_STRING_LENGTH);
+    build_sw_build (sw_build, MAX_ZIGBEE_STRING_LENGTH);
+    build_model_id (model_id, MAX_ZIGBEE_STRING_LENGTH);
+    build_vendor (vendor, MAX_ZIGBEE_STRING_LENGTH);
+    
+
     esp_zb_cfg_t zb_nwk_cfg = ESP_ZB_ZR_CONFIG();
     esp_zb_init(&zb_nwk_cfg);
 
