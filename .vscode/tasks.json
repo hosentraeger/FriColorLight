@@ -8,9 +8,9 @@
             "args": [
                 "C:/Users/fsieb/esp/esp-zigbee-sdk/tools/image_builder_tool/image_builder_tool.py",
                 "-c", "${workspaceFolder}/build/FriColorLight.ota",
-                "-v", "0x01000002",
-                "-m", "0x8042",
-                "-i", "0x0000",
+                "-v", "0x00000002",
+                "-m", "0x1001",
+                "-i", "0x1011",
                 "-f", "${workspaceFolder}/build/FriColorLight.bin"
             ],
             "dependsOn": "Build",

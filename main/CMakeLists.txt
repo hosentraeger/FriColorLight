@@ -9,4 +9,6 @@ idf_component_register(
         freertos
         esp_system
         nvs_flash
+        app_update
+        esp_timer
 )

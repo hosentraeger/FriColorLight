@@ -27,7 +27,8 @@
 #include "zcl/esp_zigbee_zcl_level.h"
 #include "zcl/esp_zigbee_zcl_color_control.h"
 #include "zboss_api_buf.h"
-#include "esp_zigbee_ota.h"
+
+#include "FriOta.h"
 
 #if !defined CONFIG_ZB_ZCZR
 #error Define ZB_ZCZR in idf.py menuconfig to compile light (Router) source code.
@@ -52,14 +53,6 @@ static uint8_t date_code[] = { 8, '2','0','2','6','0','5','2','7' };
 static uint8_t sw_build[]  = { 5, '1','.','0','.','0' };
 
 static const char *TAG = "ESP_ZB_COLOR_DIMM_LIGHT";
-
-// OTA Client Konfiguration
-esp_zb_ota_cluster_cfg_t ota_cfg = {
-    .ota_upgrade_file_version           = 0x01000002,  // deine aktuelle Firmware-Version
-    .ota_upgrade_downloaded_file_ver    = 0x01000002,
-    .ota_upgrade_manufacturer           = 0x8042,      // deine Manufacturer-ID (frei wählbar)
-    .ota_upgrade_image_type             = 0x0000,
-};
 
 esp_zb_endpoint_config_t ep_config = {
     .endpoint = HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1,
@@ -105,48 +98,16 @@ static bool zb_raw_command_handler(uint8_t bufid)
 
 static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id, const void *message)
 {
-    // ── OTA ───────────────────────────────────────────────────────────────
-    if (callback_id == ESP_ZB_CORE_OTA_UPGRADE_VALUE_CB_ID) {
-        esp_zb_zcl_ota_upgrade_value_message_t *ota_msg =
-            (esp_zb_zcl_ota_upgrade_value_message_t *)message;
+    if (callback_id == ESP_ZB_CORE_OTA_UPGRADE_VALUE_CB_ID )
+    {
+        ESP_LOGI(TAG, "OTA Upgrade Status Callback received");
+        return ( zb_ota_upgrade_status_handler(*(esp_zb_zcl_ota_upgrade_value_message_t *)message) );
+    }
 
-        switch (ota_msg->upgrade_status) {
-            case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_START:
-                ESP_LOGI(TAG, "OTA Start");
-                break;
-            case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_RECEIVE:
-                ESP_LOGI(TAG, "OTA Daten empfangen: %d bytes", ota_msg->payload_size);
-                break;
-            case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_FINISH:
-                ESP_LOGI(TAG, "OTA fertig – Neustart");
-                esp_restart();
-                break;
-            case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_ABORT:
-                ESP_LOGW(TAG, "OTA abgebrochen");
-                break;
-            case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_APPLY:
-                ESP_LOGI(TAG, "OTA Apply");
-                break;
-            case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_CHECK:
-                ESP_LOGI(TAG, "OTA Check");
-                break;
-            case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_OK:
-                ESP_LOGI(TAG, "OTA OK");
-                break;
-            case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_ERROR:
-                ESP_LOGW(TAG, "OTA Fehler");
-                break;
-            case ESP_ZB_ZCL_OTA_UPGRADE_IMAGE_STATUS_NORMAL:
-                ESP_LOGI(TAG, "OTA Image normal");
-                break;
-            case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_BUSY:
-                ESP_LOGI(TAG, "OTA busy");
-                break;
-            case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_SERVER_NOT_FOUND:
-                ESP_LOGW(TAG, "OTA Server nicht gefunden");
-                break;
-        }
-        return ESP_OK;
+    if ( callback_id == ESP_ZB_CORE_OTA_UPGRADE_QUERY_IMAGE_RESP_CB_ID )
+    {
+        ESP_LOGI(TAG, "OTA Upgrade Query Image Response Callback received");
+        return ( zb_ota_upgrade_query_image_resp_handler(*(esp_zb_zcl_ota_upgrade_query_image_resp_message_t *)message) );
     }
 
     // ── Attribut-Änderungen ───────────────────────────────────────────────
@@ -315,7 +276,6 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
                         extended_pan_id[7], extended_pan_id[6], extended_pan_id[5], extended_pan_id[4],
                         extended_pan_id[3], extended_pan_id[2], extended_pan_id[1], extended_pan_id[0],
                         esp_zb_get_pan_id(), esp_zb_get_current_channel(), esp_zb_get_short_address());
-                esp_zb_ota_upgrade_client_query_image_req(0x0000, HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1);
             }
             else 
             {
@@ -414,18 +374,18 @@ static void esp_zb_task(void *pvParameters)
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_level_cluster(cluster_list, esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_LEVEL_CONTROL), ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE));
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_color_control_cluster(cluster_list, esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_COLOR_CONTROL), ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE));
 
-    // OTA Client
-    esp_zb_attribute_list_t *ota_cluster = esp_zb_ota_cluster_create(&ota_cfg);
-    ESP_ERROR_CHECK(esp_zb_cluster_list_add_ota_cluster(cluster_list, ota_cluster, ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE));
-
     esp_zb_ep_list_t* ep_list = esp_zb_ep_list_create();
     esp_zb_ep_list_add_ep(ep_list, cluster_list, ep_config);
+
+    ESP_ERROR_CHECK(zb_register_ota_upgrade_client_device(cluster_list));
 
     esp_zb_device_register(ep_list);
 
     esp_zb_set_primary_network_channel_set(ESP_ZB_PRIMARY_CHANNEL_MASK);
     esp_zb_raw_command_handler_register(zb_raw_command_handler);
     esp_zb_core_action_handler_register(zb_action_handler);
+
+
     ESP_ERROR_CHECK(esp_zb_start(false));
     esp_zb_stack_main_loop();
 }
