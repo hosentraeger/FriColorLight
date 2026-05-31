@@ -19,14 +19,10 @@
 #define PWM_RED_PIN 20
 #define PWM_GREEN_PIN 21 
 #define PWM_BLUE_PIN 23
-#define PWM_COLDWHITE_PIN 19
-#define PWM_WARMWHITE_PIN 22
-#define NEOPIXEL_PIN 1
-
-/* Basic manufacturer information */
-//#define ESP_MANUFACTURER_NAME "\x09""ESPRESSIF"      /* Customized manufacturer name */
-//#define ESP_MODEL_IDENTIFIER "\x07"CONFIG_IDF_TARGET /* Customized model identifier */
-
+#define PWM_TW_CC_PIN 19
+#define PWM_TW_CW_PIN 22
+#define NEOPIXEL_DATA_PIN 8
+#define NEOPIXEL_NUM_LEDS 1
 #define ESP_ZB_ZR_CONFIG()                                                              \
     {                                                                                   \
         .esp_zb_role = ESP_ZB_DEVICE_TYPE_ROUTER,                                       \

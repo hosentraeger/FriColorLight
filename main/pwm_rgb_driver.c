@@ -5,7 +5,7 @@
 #include "light_driver.h"
 
 static uint8_t s_red = 255, s_green = 255, s_blue = 255, s_level = 255;
-bool s_state = 0;
+static bool s_state = 0;
 
 void pwm_rgb_driver_set_power(bool power)
 {

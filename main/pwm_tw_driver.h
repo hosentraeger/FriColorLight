@@ -46,11 +46,9 @@ void pwm_tw_driver_set_level(uint8_t level);
 /**
 * @brief Set light color from RGB
 *
-* @param  red    The red color to be set
-* @param  green  The green color to be set
-* @param  blue   The blue color to be set
+* @param  mireds      color temperature in mireds, 153=6500K kalt, 500=2000K warm 
 */
-void pwm_tw_driver_set_color_temperature(uint8_t K);
+void pwm_tw_driver_set_color_temperature(uint16_t mireds);
 
 #ifdef __cplusplus
 } // extern "C"

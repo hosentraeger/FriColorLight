@@ -29,7 +29,7 @@ void neopixel_driver_set_power(bool power);
 *
 * @param power power on/off
 */
-void neopixel_driver_init(bool power);
+void neopixel_driver_init(uint8_t data_pin, uint8_t num_leds);
 
 /**
 * @brief Set light level
@@ -63,4 +63,11 @@ void neopixel_driver_set_color_xy(uint16_t color_current_x, uint16_t color_curre
 */
 void neopixel_driver_set_color_hue_sat(uint8_t hue, uint8_t sat);
 
-#endif // __cplusplus
+/**
+* @brief Apply the current light settings
+*/
+void neopixel_driver_apply ( );
+
+#ifdef __cplusplus
+} // extern "C"
+#endif

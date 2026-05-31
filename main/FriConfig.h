@@ -12,8 +12,10 @@
 // Endpoint-Nummern definieren
 #define HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_1  1   // Erster RGB Endpunkt (bereits vorhanden)
 #define HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_2  2   // Zweiter RGB Endpunkt
-#define HA_COLOR_TEMP_LIGHT_ENDPOINT        3   // Tunable White Endpunkt
+#define HA_COLOR_DIMMABLE_LIGHT_ENDPOINT_3  3   // Tunable White Endpunkt
 #define ESP_ZB_PRIMARY_CHANNEL_MASK       ESP_ZB_TRANSCEIVER_ALL_CHANNELS_MASK  /* Zigbee primary channel mask use in the example */
+#define ESP_ZB_HA_COLOR_TEMPERATURE_LIGHT_DEVICE_ID 0x010c
+
 // #define ED_AGING_TIMEOUT                    ESP_ZB_ED_AGING_TIMEOUT_256MIN          /* End device ages time */
 // #define ED_KEEP_ALIVE                       30000                                   /* 30000 millisecond */
 
@@ -23,8 +25,8 @@
 #define MAX_ZIGBEE_STRING_LENGTH 32
 #define DEVICE_MAJOR_VERSION      1
 #define DEVICE_MINOR_VERSION      0
-#define DEVICE_PATCH_VERSION      4
-#define DEVICE_APP_VERSION        4
+#define DEVICE_PATCH_VERSION      5
+#define DEVICE_APP_VERSION        5
 // Automatisches Build-Datum – kein manuelles Pflegen mehr nötig
 #define DEVICE_DATE  build_date_yyyymmdd()
 
